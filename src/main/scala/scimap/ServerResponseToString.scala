@@ -13,6 +13,7 @@ trait ServerResponseToString {
     case r: MailboxSizeResponse => mailboxSizeResponse(r)
     case r: MessageStatusResponse => messageStatusResponse(r)
     case Continuation(text) => "+ " + text.getOrElse("")
+    case CloseConnection => sys.error("This should be intercepted by the stage")
   }
   
   def messageStatusResponse(resp: MessageStatusResponse): String = resp match {
@@ -129,7 +130,8 @@ object ServerResponseToString {
   class Stage extends StatefulStage[ServerResponse, String] with ServerResponseToString {
     override def initial = new State {
       override def onPush(chunk: ServerResponse, ctx: Context[String]): SyncDirective = {
-        emit(Iterator.single(serverResponse(chunk)), ctx)
+        if (chunk == ServerResponse.CloseConnection) ctx.finish()
+        else emit(Iterator.single(serverResponse(chunk)), ctx)
       }
     }
   }

@@ -5,14 +5,14 @@ import akka.util.ByteString
 
 class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding {
   def Tokens: Rule1[Seq[ImapToken]] = rule {
-    optional(Ws) ~ zeroOrMore(Token) ~ optional(Ws)
+    optional(Ws) ~ zeroOrMore(Token ~ optional(Ws))
   }
   
   def Token = rule {
     Str | QuotedStr | CountPrefixedStr | CountPrefix | Newline | ParensList | BracketList
   }
   
-  def Str = rule { capture(oneOrMore(!TopLevelInvalid | ch('\r'))) ~> (ImapToken.Str(_)) }
+  def Str = rule { capture(oneOrMore(!TopLevelInvalid ~ ANY)) ~> (ImapToken.Str(_)) }
   
   def QuotedStr = rule {
     '"' ~ clearSB ~ zeroOrMore(QuotedChar) ~ '"' ~ push(sb.toString) ~> (ImapToken.Str(_))

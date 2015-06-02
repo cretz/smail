@@ -52,9 +52,9 @@ object ServerResponse {
     case object ReadOnly extends StatusResponseCode
     case object ReadWrite extends StatusResponseCode
     case object TryCreate extends StatusResponseCode
-    case class UidNext(value: Long) extends StatusResponseCode
-    case class UidValidity(value: Long) extends StatusResponseCode
-    case class Unseen(value: Long) extends StatusResponseCode
+    case class UidNext(value: BigInt) extends StatusResponseCode
+    case class UidValidity(value: BigInt) extends StatusResponseCode
+    case class Unseen(value: BigInt) extends StatusResponseCode
   }
   
   sealed trait MailboxStatusResponse extends ServerResponse
@@ -154,4 +154,5 @@ object ServerResponse {
   }
   
   case class Continuation(text: Option[String] = None) extends ServerResponse
+  case object CloseConnection extends ServerResponse
 }

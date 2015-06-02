@@ -7,5 +7,6 @@ object Main extends App {
   implicit val system = ActorSystem("scimap-server")
   implicit val materializer = ActorFlowMaterializer()
 
-  ServerDaemon(Config().server.daemon)
+  val config = Config()
+  ServerDaemon(config.server.daemon, config.debug)
 }

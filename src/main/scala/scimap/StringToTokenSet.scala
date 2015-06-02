@@ -8,7 +8,6 @@ import scala.annotation.tailrec
 trait StringToTokenSet {
   var tokenBuffer = Seq.empty[ImapToken]
   val buffer = new StringBuilder
-  val parser = new ImapTokenParser(new ImapTokenParser.BufferedParserInput(buffer))
   
   def appendString(str: String): Unit = {
     buffer.append(str)
@@ -16,7 +15,10 @@ trait StringToTokenSet {
   
   def nextTokenSets(): Seq[Seq[ImapToken]] = {
     // Parse should never fail here
-    tokenBuffer ++= parser.Tokens.run().get
+    val parser = new ImapTokenParser(new ImapTokenParser.BufferedParserInput(buffer))
+    val result = parser.Tokens.run()
+    tokenBuffer ++= result.get
+    
     // Break on newlines or count prefixes
     val (sets, newBuffer) = StringToTokenSet.splitTokensOnNewlineOrCountPrefix(tokenBuffer)
     // Trim up the string to as far as we got

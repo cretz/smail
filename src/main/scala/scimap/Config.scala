@@ -2,13 +2,16 @@ package scimap
 
 import com.typesafe.config.{Config => Conf}
 import com.typesafe.config.ConfigFactory
+import scimap.handler.ServerHandler
 
 case class Config(
+  debug: Boolean,
   server: Config.Server
 )
 object Config {
-  def apply(): Config = apply(ConfigFactory.load())
+  def apply(): Config = apply(ConfigFactory.load().getConfig("scimap"))
   def apply(conf: Conf): Config = Config(
+    debug = conf.getBoolean("debug"),
     server = Server(conf.getConfig("server"))
   )
   

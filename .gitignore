@@ -5,3 +5,5 @@
 /bin
 /project
 /target
+/.cache-main
+/.cache-tests
