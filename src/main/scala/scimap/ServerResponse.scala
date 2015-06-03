@@ -46,7 +46,7 @@ object ServerResponse {
   object StatusResponseCode {
     case class Alert(text: String) extends StatusResponseCode
     case class BadCharset(charsets: Seq[String]) extends StatusResponseCode
-    case class Capability(names: Seq[CapabilityName]) extends StatusResponseCode
+    case class Capability(names: Seq[Imap.Capability]) extends StatusResponseCode
     case class Parse(text: String) extends StatusResponseCode
     case class PermanentFlags(flags: Seq[Imap.Flag]) extends StatusResponseCode
     case object ReadOnly extends StatusResponseCode
@@ -59,17 +59,7 @@ object ServerResponse {
   
   sealed trait MailboxStatusResponse extends ServerResponse
   
-  case class Capability(names: Seq[CapabilityName]) extends MailboxStatusResponse
-  
-  sealed trait CapabilityName
-  object CapabilityName {
-    case object Imap4Rev1 extends CapabilityName
-    case object StartTls extends CapabilityName
-    case object LoginDisabled extends CapabilityName
-    case class Auth(mechanism: String) extends CapabilityName
-    val AuthPlain = Auth("PLAIN")
-    case class Custom(contents: String, prefixWithX: Boolean = true) extends CapabilityName
-  }
+  case class Capability(names: Seq[Imap.Capability]) extends MailboxStatusResponse
   
   case class List(
     name: String,
@@ -117,33 +107,17 @@ object ServerResponse {
   sealed trait FetchDataItem
   object FetchDataItem {
     // TODO: note, a bit duped here from the client side
+    case class NonExtensibleBodyStructure(list: Imap.BodyStructureItem.List) extends FetchDataItem
     case class Body(
-      // There is a difference between not present and empty here
-      section: Option[Seq[BodyPart]],
+      section: Seq[Imap.BodyPart],
       contents: String,
       originOctet: Option[Int] = None
     ) extends FetchDataItem
     
-    type BodyPart = Either[Int, BodyPartSpecifier]
-    sealed trait BodyPartSpecifier
-    object BodyPartSpecifier {
-      case object Header extends BodyPartSpecifier
-      case class HeaderFields(fields: Seq[String]) extends BodyPartSpecifier
-      case class HeaderFieldsNot(fields: Seq[String]) extends BodyPartSpecifier
-      case object Mime extends BodyPartSpecifier
-      case object Text extends BodyPartSpecifier
-    }
-    
-    case class BodyStructure(list: BodyStructureItem.List) extends FetchDataItem
-    // TODO: Get more typesafe here (and too bad we can't be f-bounded here...have to have subtypes)
-    sealed trait BodyStructureItem
-    object BodyStructureItem {
-      case class Literal(value: String) extends BodyStructureItem
-      case class List(values: Seq[BodyStructureItem]) extends BodyStructureItem
-    }
+    case class BodyStructure(list: Imap.BodyStructureItem.List) extends FetchDataItem
     
     // TODO: Get more typesafe here
-    case class Envelope(list: BodyStructureItem.List) extends FetchDataItem
+    case class Envelope(list: Imap.BodyStructureItem.List) extends FetchDataItem
     case class Flags(flags: Seq[Imap.Flag]) extends FetchDataItem
     case class InternalDate(date: DateTime) extends FetchDataItem
     case class Rfc822(contents: String) extends FetchDataItem

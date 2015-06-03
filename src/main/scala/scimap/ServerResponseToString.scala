@@ -24,39 +24,40 @@ trait ServerResponseToString {
   def fetchDataItem(item: FetchDataItem): String = {
     import FetchDataItem._
     item match {
-      case Body(None, contents, _) => "BODY " + contents
-      case Body(Some(section), contents, origin) =>
+      case NonExtensibleBodyStructure(list) => "BODY " + bodyStructureItem(list)
+      case Body(section, contents, origin) =>
         "BODY[" + section.map(bodyPart).mkString(".") + "]" +
-          origin.map("<" + _ + ">").getOrElse("") + " " + contents
+          origin.map("<" + _ + ">").getOrElse("") + " " + literalString(contents)
       case BodyStructure(list) => "BODYSTRUCTURE " + bodyStructureItem(list)
       case Envelope(list) => "ENVELOPE " + bodyStructureItem(list)
       case Flags(flags) => "FLAGS (" + flags.mkString(" ") + ")"
       case InternalDate(date) => "INTERNALDATE " + TokenSetToClientCommand.dateTimeFormat.print(date)
-      case Rfc822(contents) => "RFC822 " + contents
-      case Rfc822Header(contents) => "RFC822.HEADER " + contents
+      case Rfc822(contents) => "RFC822 " + literalString(contents)
+      case Rfc822Header(contents) => "RFC822.HEADER " + literalString(contents)
       case Rfc822Size(size) => "RFC822.SIZE " + size
-      case Rfc822Text(contents) => "RFC822.TEXT " + contents
+      case Rfc822Text(contents) => "RFC822.TEXT " + literalString(contents)
       case Uid(uid) => "UID " + uid
     }
   }
   
-  def bodyStructureItem(item: FetchDataItem.BodyStructureItem): String = {
-    import FetchDataItem.BodyStructureItem._
+  def bodyStructureItem(item: Imap.BodyStructureItem): String = {
+    import Imap.BodyStructureItem._
     item match {
+      case Nil => "NIL"
       case Literal(value) => safeString(value)
       case List(values) => "(" + values.map(bodyStructureItem) + ")"
     }
   }
   
-  def bodyPart(part: FetchDataItem.BodyPart): String = {
-    import FetchDataItem.BodyPartSpecifier._
+  def bodyPart(part: Imap.BodyPart): String = {
+    import Imap.BodyPart._
     part match {
-      case Left(int) => int.toString
-      case Right(Header) => "HEADER"
-      case Right(HeaderFields(fields)) => "HEADER.FIELDS (" + fields.mkString(" ") + ')'
-      case Right(HeaderFieldsNot(fields)) => "HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')'
-      case Right(Mime) => "MIME"
-      case Right(Text) => "TEXT"
+      case Number(int) => int.toString
+      case Header => "HEADER"
+      case HeaderFields(fields) => "HEADER.FIELDS (" + fields.mkString(" ") + ')'
+      case HeaderFieldsNot(fields) => "HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')'
+      case Mime => "MIME"
+      case Text => "TEXT"
     }
   }
   
@@ -96,7 +97,7 @@ trait ServerResponseToString {
       case BadCharset(charsets) => "BADCHARSET " + charsets.map(safeString).mkString(",")
       case Capability(names) => "CAPABILITY " + names.map(capability).mkString(" ")
       case Parse(msg) => "PARSE " + safeString(msg)
-      case PermanentFlags(flags) => "PERMANENTFLAGS " + flags.mkString(" ")
+      case PermanentFlags(flags) => "PERMANENTFLAGS (" + flags.mkString(" ") + ")"
       case ReadOnly => "READ-ONLY"
       case ReadWrite => "READ-WRITE"
       case TryCreate => "TRYCREATE"
@@ -106,8 +107,8 @@ trait ServerResponseToString {
     }
   }
   
-  def capability(name: CapabilityName): String = {
-    import CapabilityName._
+  def capability(name: Imap.Capability): String = {
+    import Imap.Capability._
     name match {
       case Imap4Rev1 => "IMAP4rev1"
       case StartTls => "STARTTLS"
@@ -116,6 +117,10 @@ trait ServerResponseToString {
       case Custom(contents, true) => s"X$contents"
       case Custom(contents, false) => contents
     }
+  }
+  
+  def literalString(string: String): String = {
+    return "{" + string.length + s"}\r\n$string"
   }
   
   def safeString(string: String): String = {

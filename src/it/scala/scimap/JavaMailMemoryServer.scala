@@ -6,11 +6,12 @@ import org.specs2.execute.Result
 import org.specs2.specification.ForEach
 import akka.actor.ActorSystem
 import akka.stream.FlowMaterializer
-import scimap.handler.InMemoryServerHandler
 import akka.stream.ActorFlowMaterializer
 import javax.mail.Session
 import java.util.Properties
 import akka.stream.ActorFlowMaterializerSettings
+import scimap.handler.InMemoryServer
+import scimap.handler.HighLevelServerHandler
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {
@@ -18,10 +19,10 @@ trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
     implicit val materializer = ActorFlowMaterializer(
       ActorFlowMaterializerSettings(system).withDebugLogging(true)
     )
-    val handler = new InMemoryServerHandler()
+    val server = new InMemoryServer()
     val ctx = new JavaMailMemoryServer.Context(
-      ServerDaemon("127.0.0.1", 143, () => handler, true),
-      handler
+      ServerDaemon("127.0.0.1", 143, () => new HighLevelServerHandler(server), true),
+      server
     )
     try AsResult(f(ctx))
     finally {
@@ -31,7 +32,7 @@ trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   }
 }
 object JavaMailMemoryServer {
-  class Context(val daemon: ServerDaemon, val handler: InMemoryServerHandler) {
+  class Context(val daemon: ServerDaemon, val server: InMemoryServer) {
     
     var username = "foo"
     var password = "bar"

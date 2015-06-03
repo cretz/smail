@@ -3,6 +3,7 @@ package scimap
 import com.typesafe.config.{Config => Conf}
 import com.typesafe.config.ConfigFactory
 import scimap.handler.ServerHandler
+import scimap.handler.HighLevelServer
 
 case class Config(
   debug: Boolean,
@@ -27,14 +28,18 @@ object Config {
     case class Daemon(
       interface: String,
       port: Int,
-      handlerClass: Class[_ <: ServerHandler]
+      handlerClass: Either[Class[_ <: ServerHandler], Class[_ <: HighLevelServer]]
     )
     object Daemon {
       def apply(conf: Conf): Daemon = Daemon(
         interface = conf.getString("interface"),
         port = conf.getInt("port"),
-        handlerClass = getClass.getClassLoader.
-          loadClass(conf.getString("interface")).asSubclass(classOf[ServerHandler])
+        handlerClass = {
+          val cls = getClass.getClassLoader.loadClass(conf.getString("interface"))
+          if (classOf[ServerHandler].isAssignableFrom(cls)) Left(cls.asSubclass(classOf[ServerHandler]))
+          else if (classOf[HighLevelServer].isAssignableFrom(cls)) Right(cls.asSubclass(classOf[HighLevelServer]))
+          else sys.error("Unrecognized class type: " + cls)
+        }
       )
     }
   }

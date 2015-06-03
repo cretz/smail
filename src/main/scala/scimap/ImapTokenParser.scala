@@ -5,14 +5,14 @@ import akka.util.ByteString
 
 class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding {
   def Tokens: Rule1[Seq[ImapToken]] = rule {
-    optional(Ws) ~ zeroOrMore(Token ~ optional(Ws))
+    optional(Ws) ~ zeroOrMore(Token ~ optional(Ws)) ~ optional(Ws)
   }
   
   def Token = rule {
-    Str | QuotedStr | CountPrefixedStr | CountPrefix | Newline | ParensList | BracketList
+    ParensList | BracketList | Str | QuotedStr | CountPrefixedStr | CountPrefix | Newline
   }
   
-  def Str = rule { capture(oneOrMore(!TopLevelInvalid ~ ANY)) ~> (ImapToken.Str(_)) }
+  def Str = rule { capture(oneOrMore(!AtomSpecials ~ ANY)) ~> (ImapToken.Str(_)) }
   
   def QuotedStr = rule {
     '"' ~ clearSB ~ zeroOrMore(QuotedChar) ~ '"' ~ push(sb.toString) ~> (ImapToken.Str(_))
@@ -35,11 +35,20 @@ class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding
   
   def Ws = rule { ch(' ') | '\t' }
   
-  def TopLevelInvalid = rule { ImapTokenParser.ControlChar | '(' | '{' | '[' | ' ' | '"' }
-  
   def ParensList = rule { '(' ~ Tokens ~ ')' ~> (ImapToken.List('(', _)) }
   
   def BracketList = rule { '[' ~ Tokens ~ ']' ~> (ImapToken.List('[', _)) }
+  
+  def ListWildcards = rule { ch('%') | '*' }
+  
+  def QuotedSpecials = rule { ch('"') | '\\' }
+  
+  // Note, added extra '[' because I want the list to capture it
+  def RespSpecials = rule { ch('[') | ']' }
+  
+  def AtomSpecials = rule {
+    ImapTokenParser.ControlChar | '(' | ')' | '{' | ' ' | ListWildcards | QuotedSpecials | RespSpecials
+  }
 }
 
 object ImapTokenParser {

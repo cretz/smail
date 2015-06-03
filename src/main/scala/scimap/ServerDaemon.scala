@@ -5,6 +5,7 @@ import akka.actor.ActorSystem
 import akka.stream.FlowMaterializer
 import scimap.handler.ServerHandler
 import scala.util.Try
+import scimap.handler.HighLevelServerHandler
 
 case class ServerDaemon(
   interface: String,
@@ -23,7 +24,10 @@ object ServerDaemon {
       ServerDaemon(
         interface = conf.interface,
         port = conf.port,
-        handler = () => conf.handlerClass.newInstance(),
+        handler = conf.handlerClass match {
+          case Left(handler) => () => handler.newInstance()
+          case Right(server) => () => new HighLevelServerHandler(server.newInstance())
+        },
         debug = debug
       )
 }

@@ -264,7 +264,7 @@ trait TokenSetToClientCommand {
             case _ => Some(FetchDataItem.Body(parts) -> tokens.drop(2))
           }
         }
-        case _ => Some(FetchDataItem.Body(Seq.empty) -> tokens.drop(1))
+        case _ => Some(FetchDataItem.NonExtensibleBodyStructure -> tokens.drop(1))
       }
       case ImapToken.Str("BODY.PEEK") => tokens.lift(1) match {
         case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartsFromTokens(bodyTokens).flatMap { parts =>
@@ -285,42 +285,43 @@ trait TokenSetToClientCommand {
   
   def fetchOffsetsFromString(string: String): Option[(Int, Int)] = {
     if (!string.startsWith("<") || !string.endsWith(">")) return None
-    val pieces = string.substring(1, string.length - 2).split('.')
+    val pieces = string.substring(1, string.length - 1).split('.')
     if (pieces.length != 2) None
     else Try(pieces(0).toInt).toOption.flatMap(i => Try(pieces(1).toInt).toOption.map(i -> _))
   }
   
-  def fetchBodyPartsFromTokens(tokens: Seq[ImapToken]): Option[Seq[FetchDataItem.BodyPart]] = {
-    if (tokens.isEmpty || !tokens.head.isInstanceOf[ImapToken.Str]) return None
+  def fetchBodyPartsFromTokens(tokens: Seq[ImapToken]): Option[Seq[Imap.BodyPart]] = {
+    if (tokens.isEmpty) return Some(Seq.empty)
+    else if (!tokens.head.isInstanceOf[ImapToken.Str]) return None
     val ImapToken.Str(partName) = tokens.head
-    val parts = partName.split('.').foldLeft(Option(Seq.empty[FetchDataItem.BodyPart])) {
+    val parts = partName.split('.').foldLeft(Option(Seq.empty[Imap.BodyPart])) {
       case (None, _) => None
       case (Some(seq), partPiece) => partPiece match {
         case "HEADER" => seq.lastOption match {
-          case Some(Left(_)) | None => Some(seq :+ Right(FetchDataItem.BodyPartSpecifier.Header))
+          case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Header)
           case _ => None
         } 
         case "FIELDS" => seq.lastOption match {
-          case Some(Right(FetchDataItem.BodyPartSpecifier.Header)) =>
-            Some(seq.dropRight(1) :+ Right(FetchDataItem.BodyPartSpecifier.HeaderFields(Seq.empty)))
+          case Some(Imap.BodyPart.Header) =>
+            Some(seq.dropRight(1) :+ Imap.BodyPart.HeaderFields(Seq.empty))
           case _ => None
         }
         case "NOT" => seq.lastOption match {
-          case Some(Right(_: FetchDataItem.BodyPartSpecifier.HeaderFields)) =>
-            Some(seq.dropRight(1) :+ Right(FetchDataItem.BodyPartSpecifier.HeaderFieldsNot(Seq.empty)))
+          case Some(_: Imap.BodyPart.HeaderFields) =>
+            Some(seq.dropRight(1) :+ Imap.BodyPart.HeaderFieldsNot(Seq.empty))
           case _ => None
         }
         case "TEXT" => seq.lastOption match {
-          case Some(Left(_)) | None => Some(seq :+ Right(FetchDataItem.BodyPartSpecifier.Text))
+          case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Text)
           case _ => None
         }
         case "MIME" => seq.lastOption match {
-          case Some(Left(_)) => Some(seq :+ Right(FetchDataItem.BodyPartSpecifier.Mime))
+          case Some(_: Imap.BodyPart.Number) => Some(seq :+ Imap.BodyPart.Mime)
           case _ => None
         }
         case str => Try(str.toInt).toOption.flatMap { num =>
           seq.lastOption match {
-            case Some(Left(_)) | None => Some(seq :+ Left(num))
+            case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Number(num))
             case _ => None
           }
         }
@@ -328,15 +329,15 @@ trait TokenSetToClientCommand {
     }
     // Some parts require an extra list, some don't
     parts.flatMap(_.lastOption) match {
-      case Some(Right(_: FetchDataItem.BodyPartSpecifier.HeaderFields)) =>
+      case Some(_: Imap.BodyPart.HeaderFields) =>
         if (tokens.length != 2) None
         else headerFieldsFromToken(tokens(1)).flatMap { seq =>
-          Some(parts.get.dropRight(1) :+ Right(FetchDataItem.BodyPartSpecifier.HeaderFields(seq)))
+          Some(parts.get.dropRight(1) :+ Imap.BodyPart.HeaderFields(seq))
         }
-      case Some(Right(_: FetchDataItem.BodyPartSpecifier.HeaderFieldsNot)) =>
+      case Some(_: Imap.BodyPart.HeaderFieldsNot) =>
         if (tokens.length != 2) None
         else headerFieldsFromToken(tokens(1)).flatMap { seq =>
-          Some(parts.get.dropRight(1) :+ Right(FetchDataItem.BodyPartSpecifier.HeaderFieldsNot(seq)))
+          Some(parts.get.dropRight(1) :+ Imap.BodyPart.HeaderFieldsNot(seq))
         }
       case _  if (tokens.length == 1) => parts
       case _ => None
@@ -477,7 +478,7 @@ trait TokenSetToClientCommand {
   
   def sequenceNumberFromString(string: String): Option[Imap.SequenceNumber] = {
     if (string == "*") Some(Imap.SequenceNumberAll)
-    else Try(string.toLong).toOption.map(Imap.SequenceNumberLiteral)
+    else Try(BigInt(string)).toOption.map(Imap.SequenceNumberLiteral)
   }
   
   def sequenceRangeFromString(string: String): Option[Imap.SequenceRange] = string.indexOf(':') match {

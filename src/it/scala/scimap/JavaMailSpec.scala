@@ -3,14 +3,13 @@ package scimap
 import org.specs2.mutable.SpecificationWithJUnit
 import scimap.JavaMailMemoryServer.Context
 import javax.mail.Folder
-import scimap.handler.InMemoryServerHandler
-import scala.collection.SortedMap
+import scimap.handler.InMemoryServer
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   "JavaMail API" >> {
     
     "Should be able to fetch simple messages" >> { ctx: Context =>
-      ctx.handler.users += createTestUser
+      ctx.server.users += createTestUser
 //      ctx.handler.users +=
       println("Connecting")
       ctx.store
@@ -21,6 +20,10 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       println("Getting messages")
       val msgs = inbox.getMessages
       println("Got messages")
+      msgs.foreach { msg =>
+        println("MSG!")
+        System.out.println("---------\n" + msg.getContent + "\n---------")
+      }
 //      try {
 //        
 //      } finally inbox.close(false)
@@ -29,27 +32,33 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   }
     
   def createTestUser() = {
-    import InMemoryServerHandler._
-    "foo" -> new User(
+    import InMemoryServer._
+    "foo" -> new InMemoryUser(
       username = "foo",
       password = "bar",
       mailboxes = Map(
-        "INBOX" -> new Mailbox(
+        "INBOX" -> new InMemoryMailbox(
           name = "INBOX",
           flags = Set(Imap.Flag.Answered),
           permanentFlags = Set.empty,
-          messages = SortedMap(
-            BigInt(1) -> new Message(
+          messages = Seq(
+            new InMemoryMessage(
               uid = 1,
-              flags = Set.empty
+              flags = Set.empty,
+              headers = Map("Subject" -> "Test 1"),
+              body = "Test message 1"
             ),
-            BigInt(2) -> new Message(
+            new InMemoryMessage(
               uid = 2,
-              flags = Set(Imap.Flag.Seen)
+              flags = Set(Imap.Flag.Seen),
+              headers = Map("Subject" -> "Test 2"),
+              body = "Test message 2"
             ),
-            BigInt(3) -> new Message(
+            new InMemoryMessage(
               uid = 3,
-              flags = Set(Imap.Flag.Recent)
+              flags = Set(Imap.Flag.Recent),
+              headers = Map("Subject" -> "Test 3"),
+              body = "Test message 3"
             )
           )
         )

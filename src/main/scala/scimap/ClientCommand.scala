@@ -122,24 +122,15 @@ object ClientCommand {
   
   sealed trait FetchDataItem
   object FetchDataItem {
+    case object NonExtensibleBodyStructure extends FetchDataItem
     case class Body(
-      section: Seq[BodyPart],
+      section: Seq[Imap.BodyPart],
       octetOffset: Option[Int] = None,
       octetCount: Option[Int] = None
     ) extends FetchDataItem
     
-    type BodyPart = Either[Int, BodyPartSpecifier]
-    sealed trait BodyPartSpecifier
-    object BodyPartSpecifier {
-      case object Header extends BodyPartSpecifier
-      case class HeaderFields(fields: Seq[String]) extends BodyPartSpecifier
-      case class HeaderFieldsNot(fields: Seq[String]) extends BodyPartSpecifier
-      case object Mime extends BodyPartSpecifier
-      case object Text extends BodyPartSpecifier
-    }
-    
     case class BodyPeek(
-      section: Seq[BodyPart],
+      section: Seq[Imap.BodyPart],
       octetOffset: Option[Int] = None,
       octetCount: Option[Int] = None
     ) extends FetchDataItem
