@@ -1,7 +1,7 @@
 package scimap
 package handler
 
-import org.joda.time.DateTime
+import java.time.ZonedDateTime
 
 trait HighLevelServer {
   import HighLevelServer._
@@ -16,6 +16,9 @@ trait HighLevelServer {
   
   def authenticatePlain(username: String, password: String): Boolean
   def examine(mailbox: String): Option[Mailbox]
+  def flushCurrentMailboxDeleted(): Unit
+  def closeCurrentMailbox(): Unit
+  def close(): Unit
 }
 object HighLevelServer {
   trait Mailbox {
@@ -32,10 +35,10 @@ object HighLevelServer {
   
   trait Message {
     def uid: BigInt
-    def bodyStructure: Imap.BodyStructureItem.List
-    def envelope: Imap.BodyStructureItem.List
+    def bodyStructure: Imap.BodyStructure
+    def envelope: Imap.Envelope
     def flags: Set[Imap.Flag]
-    def internalDate: DateTime
+    def internalDate: ZonedDateTime
     def size: BigInt
     def getBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String]
     def peekBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String]

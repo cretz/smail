@@ -1,6 +1,16 @@
 package scimap
 
+import java.time.format.DateTimeFormatter
+import java.time.ZonedDateTime
+
 object Imap {
+  //DQUOTE date-day-fixed "-" date-month "-" date-year SP time SP zone DQUOTE
+  lazy val dateTimeFormat = DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm:ss Z")
+  //date-day "-" date-month "-" date-year
+  lazy val dateFormat = DateTimeFormatter.ofPattern("dd-MMM-yyyy")
+  //RFC2822 - 3.3
+  lazy val mailDateTimeFormat = DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm:ss Z")
+  
   case class SequenceSet(items: Seq[SequenceSetItem])
   sealed trait SequenceSetItem
   case class SequenceRange(low: SequenceNumber, high: SequenceNumber) extends SequenceSetItem
@@ -74,13 +84,50 @@ object Imap {
     case class Custom(contents: String, prefixWithX: Boolean = true) extends Capability
   }
   
-  // TODO: Get more typesafe here (and too bad we can't be f-bounded here...have to have subtypes)
-  sealed trait BodyStructureItem
-  object BodyStructureItem {
-    case object Nil extends BodyStructureItem
-    case class Literal(value: String) extends BodyStructureItem
-    case class List(values: Seq[BodyStructureItem]) extends BodyStructureItem
+  // TODO: Make the body structure stuff more type safe such as special TEXT versions
+  //  and more explicit requirements of which values need to be present
+  sealed trait BodyStructure {
+    def sansExtension: BodyStructure
   }
+  
+  case class BodyStructureMulti(
+    parts: Seq[BodyStructure],
+    subType: String,
+    extension: Option[BodyStructureMultiExtension] = None
+  ) extends BodyStructure {
+    override def sansExtension: BodyStructure = copy(
+      parts = parts.map(_.sansExtension),
+      extension = None
+    )
+  }
+  
+  case class BodyStructureMultiExtension(
+    parameters: Map[String, String] = Map.empty,
+    disposition: Option[(String, Map[String, String])] = None,
+    language: Seq[String] = Seq.empty,
+    location: Seq[String] = Seq.empty
+  )
+  
+  case class BodyStructureSingle(
+    bodyType: String,
+    subType: String,
+    parameters: Map[String, String] = Map.empty,
+    id: Option[String] = None,
+    description: Option[String] = None,
+    encoding: Option[String] = None,
+    size: Int,
+    lineCount: Option[Int] = None,
+    extension: Option[BodyStructureSingleExtension] = None
+  ) extends BodyStructure {
+    override def sansExtension: BodyStructure = copy(extension = None)
+  }
+  
+  case class BodyStructureSingleExtension(
+    md5: Option[String] = None,
+    disposition: Option[(String, Map[String,String])] = None,
+    language: Seq[String] = Seq.empty,
+    location: Seq[String] = Seq.empty
+  )
 
   sealed trait BodyPart
   object BodyPart {
@@ -91,4 +138,29 @@ object Imap {
     case object Mime extends BodyPart
     case object Text extends BodyPart
   }
+  
+  case class Envelope(
+    date: Option[ZonedDateTime] = None,
+    subject: Option[String] = None,
+    from: Seq[MailAddress] = Seq.empty,
+    sender: Seq[MailAddress] = Seq.empty,
+    replyTo: Seq[MailAddress] = Seq.empty,
+    to: Seq[MailAddress] = Seq.empty,
+    cc: Seq[MailAddress] = Seq.empty,
+    bcc: Seq[MailAddress] = Seq.empty,
+    inReplyTo: Option[(String, String)] = None,
+    messageId: Option[(String, String)] = None
+  )
+  
+  sealed trait MailAddress {
+    override def toString: String = ???
+  }
+  case class MailboxAddress(
+    mailbox: (String, String),
+    displayName: Option[String] = None
+  ) extends MailAddress
+  case class GroupAddress(
+    displayName: String,
+    mailboxes: Seq[MailboxAddress]
+  ) extends MailAddress
 }

@@ -1,6 +1,6 @@
 package scimap
 
-import org.joda.time.DateTime
+import java.time.ZonedDateTime
 
 sealed trait ServerResponse
 
@@ -107,19 +107,19 @@ object ServerResponse {
   sealed trait FetchDataItem
   object FetchDataItem {
     // TODO: note, a bit duped here from the client side
-    case class NonExtensibleBodyStructure(list: Imap.BodyStructureItem.List) extends FetchDataItem
+    case class NonExtensibleBodyStructure(list: ImapToken.List) extends FetchDataItem
     case class Body(
       section: Seq[Imap.BodyPart],
       contents: String,
       originOctet: Option[Int] = None
     ) extends FetchDataItem
     
-    case class BodyStructure(list: Imap.BodyStructureItem.List) extends FetchDataItem
+    case class BodyStructure(list: ImapToken.List) extends FetchDataItem
     
     // TODO: Get more typesafe here
-    case class Envelope(list: Imap.BodyStructureItem.List) extends FetchDataItem
+    case class Envelope(list: ImapToken.List) extends FetchDataItem
     case class Flags(flags: Seq[Imap.Flag]) extends FetchDataItem
-    case class InternalDate(date: DateTime) extends FetchDataItem
+    case class InternalDate(date: ZonedDateTime) extends FetchDataItem
     case class Rfc822(contents: String) extends FetchDataItem
     case class Rfc822Header(contents: String) extends FetchDataItem
     case class Rfc822Size(size: BigInt) extends FetchDataItem

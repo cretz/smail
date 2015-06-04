@@ -4,8 +4,9 @@ import akka.stream.stage.StatefulStage
 import akka.util.ByteString
 import akka.stream.stage.SyncDirective
 import akka.stream.stage.Context
-import org.joda.time.format.DateTimeFormat
 import scala.util.Try
+import java.time.ZonedDateTime
+import java.time.LocalDate
 
 trait TokenSetToClientCommand {
   import ClientCommand._
@@ -16,13 +17,13 @@ trait TokenSetToClientCommand {
     var properChunk = waitingForText ++ chunk
     waitingForText = Seq.empty
     properChunk.headOption match {
-      case Some(ImapToken.Str(tag)) => properChunk.last match {
+      case Some(ImapToken.Str(tag, _)) => properChunk.last match {
         case _: ImapToken.StrCountPrefix =>
           waitingForText = properChunk.dropRight(1)
           WaitingForMoreText(properChunk)
         case _ => properChunk.lift(1) match {
           // The next one has to be a string too
-          case Some(ImapToken.Str(cmdName)) =>
+          case Some(ImapToken.Str(cmdName, _)) =>
             parseCommand(tag, cmdName, properChunk.drop(2), properChunk)
           case _ => UnrecognizedCommand(properChunk)
         }
@@ -50,54 +51,56 @@ trait TokenSetToClientCommand {
       if (!parameters.isEmpty) UnexpectedArguments(allTokens)
       else CommandSuccess(StartTls(tag))
     case "AUTHENTICATE" => parameters match {
-      case Seq(ImapToken.Str(mechanism)) => CommandSuccess(Authenticate(tag, mechanism))
+      case Seq(ImapToken.Str(mechanism, _)) => CommandSuccess(Authenticate(tag, mechanism))
       case _ => UnexpectedArguments(allTokens)
     }
     case "LOGIN" => parameters match {
-      case Seq(ImapToken.Str(username), ImapToken.Str(password)) => CommandSuccess(Login(tag, username, password))
-      case _ => UnexpectedArguments(allTokens)
+      case Seq(ImapToken.Str(username, _), ImapToken.Str(password, _)) =>
+        CommandSuccess(Login(tag, username, password))
+      case _ =>
+        UnexpectedArguments(allTokens)
     }
     case "SELECT" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Select(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Select(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "EXAMINE" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Examine(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Examine(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "CREATE" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Create(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Create(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "DELETE" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Delete(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Delete(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "RENAME" => parameters match {
-      case Seq(ImapToken.Str(existingMailbox), ImapToken.Str(newMailbox)) =>
+      case Seq(ImapToken.Str(existingMailbox, _), ImapToken.Str(newMailbox, _)) =>
         CommandSuccess(Rename(tag, existingMailbox, newMailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "SUBSCRIBE" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Subscribe(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Subscribe(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "UNSUBSCRIBE" => parameters match {
-      case Seq(ImapToken.Str(mailbox)) => CommandSuccess(Unsubscribe(tag, mailbox))
+      case Seq(ImapToken.Str(mailbox, _)) => CommandSuccess(Unsubscribe(tag, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "LIST" => parameters match {
-      case Seq(ImapToken.Str(reference), ImapToken.Str(mailbox)) => CommandSuccess(List(tag, reference, mailbox))
+      case Seq(ImapToken.Str(reference, _), ImapToken.Str(mailbox, _)) => CommandSuccess(List(tag, reference, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "LSUB" => parameters match {
-      case Seq(ImapToken.Str(reference), ImapToken.Str(mailbox)) => CommandSuccess(LSub(tag, reference, mailbox))
+      case Seq(ImapToken.Str(reference, _), ImapToken.Str(mailbox, _)) => CommandSuccess(LSub(tag, reference, mailbox))
       case _ => UnexpectedArguments(allTokens)
     }
     case "STATUS" => parameters match {
-      case Seq(ImapToken.Str(mailbox), ImapToken.List('(', dataItems)) =>
+      case Seq(ImapToken.Str(mailbox, _), ImapToken.List('(', dataItems)) =>
         dataItems.foldLeft(CommandSuccess(Status(tag, mailbox, Seq.empty)): ParseResult) {
-          case (CommandSuccess(s: Status), ImapToken.Str(dataItem)) => dataItem match {
+          case (CommandSuccess(s: Status), ImapToken.Str(dataItem, _)) => dataItem match {
             case "MESSAGES" => CommandSuccess(s.copy(dataItems = s.dataItems :+ Imap.StatusDataItem.Messages))
             case "RECENT" => CommandSuccess(s.copy(dataItems = s.dataItems :+ Imap.StatusDataItem.Recent))
             case "UIDNEXT" => CommandSuccess(s.copy(dataItems = s.dataItems :+ Imap.StatusDataItem.UidNext))
@@ -111,13 +114,13 @@ trait TokenSetToClientCommand {
     }
     case "APPEND" =>
       val pieces = parameters match {
-        case Seq(ImapToken.Str(mailbox), ImapToken.List('(', flags),
-          ImapToken.Str(dateTime), ImapToken.Str(message)) => Some((mailbox, flags, Some(dateTime), message))
-        case Seq(ImapToken.Str(mailbox), ImapToken.List('(', flags), ImapToken.Str(message)) =>
+        case Seq(ImapToken.Str(mailbox, _), ImapToken.List('(', flags),
+          ImapToken.Str(dateTime, _), ImapToken.Str(message, _)) => Some((mailbox, flags, Some(dateTime), message))
+        case Seq(ImapToken.Str(mailbox, _), ImapToken.List('(', flags), ImapToken.Str(message, _)) =>
           Some((mailbox, flags, None, message))
-        case Seq(ImapToken.Str(mailbox), ImapToken.Str(dateTime), ImapToken.Str(message)) =>
+        case Seq(ImapToken.Str(mailbox, _), ImapToken.Str(dateTime, _), ImapToken.Str(message, _)) =>
           Some((mailbox, Seq.empty, Some(dateTime), message))
-        case Seq(ImapToken.Str(mailbox), ImapToken.Str(message)) => Some((mailbox, Seq.empty, None, message))
+        case Seq(ImapToken.Str(mailbox, _), ImapToken.Str(message, _)) => Some((mailbox, Seq.empty, None, message))
         case _ => None
       }
       pieces match {
@@ -127,7 +130,7 @@ trait TokenSetToClientCommand {
             case (None, _) => None
             case (Some(seq), flag) => flagFromToken(flag).map(seq :+ _)
           } match {
-            case Some(flags) => Try(dateTime.map(TokenSetToClientCommand.dateTimeFormat.parseDateTime)) match {
+            case Some(flags) => Try(dateTime.map(ZonedDateTime.parse(_, Imap.dateTimeFormat))) match {
               case scala.util.Success(dateTime) => CommandSuccess(Append(tag, mailbox, message, flags, dateTime))
               case _ => UnexpectedArguments(allTokens)
             }
@@ -145,7 +148,7 @@ trait TokenSetToClientCommand {
       else CommandSuccess(Expunge(tag))
     case "SEARCH" =>
       val (charset, searchParameters) = parameters.take(2) match {
-        case Seq(ImapToken.Str("CHARSET"), ImapToken.Str(charset)) => Some(charset) -> parameters.drop(2)
+        case Seq(ImapToken.Str("CHARSET", _), ImapToken.Str(charset, _)) => Some(charset) -> parameters.drop(2)
         case _ => None -> parameters
       }
       searchCriterias(searchParameters) match {
@@ -154,7 +157,7 @@ trait TokenSetToClientCommand {
       }
     case "FETCH" =>
       parameters.headOption.collect({
-        case ImapToken.Str(string) => sequenceSetFromString(string) 
+        case ImapToken.Str(string, _) => sequenceSetFromString(string) 
       }).flatten match {
         case None => UnexpectedArguments(allTokens)
         case Some(set) => fetchItemFromTokens(parameters.drop(1)) match {
@@ -165,7 +168,7 @@ trait TokenSetToClientCommand {
     // TODO: here and elsewhere, let's check that there aren't extra params
     case "STORE" =>
       parameters.headOption.collect({
-        case ImapToken.Str(string) => sequenceSetFromString(string) 
+        case ImapToken.Str(string, _) => sequenceSetFromString(string) 
       }).flatten match {
         case None => UnexpectedArguments(allTokens)
         case Some(set) => parameters.lift(2) match {
@@ -176,17 +179,17 @@ trait TokenSetToClientCommand {
             } match {
               case None => UnexpectedArguments(allTokens)
               case Some(flags) => parameters(1) match {
-                case ImapToken.Str("FLAGS") =>
+                case ImapToken.Str("FLAGS", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Replace, false)))
-                case ImapToken.Str("FLAGS.SILENT") =>
+                case ImapToken.Str("FLAGS.SILENT", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Replace, true)))
-                case ImapToken.Str("+FLAGS") =>
+                case ImapToken.Str("+FLAGS", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Add, false)))
-                case ImapToken.Str("+FLAGS.SILENT") =>
+                case ImapToken.Str("+FLAGS.SILENT", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Add, true)))
-                case ImapToken.Str("-FLAGS") =>
+                case ImapToken.Str("-FLAGS", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Remove, false)))
-                case ImapToken.Str("-FLAGS.SILENT") =>
+                case ImapToken.Str("-FLAGS.SILENT", _) =>
                   CommandSuccess(Store(tag, set, StoreDataItem(flags, StoreDataItem.FlagOperation.Remove, true)))
                 case _ => UnexpectedArguments(allTokens)
               }
@@ -196,16 +199,16 @@ trait TokenSetToClientCommand {
       }
     case "COPY" =>
       parameters.headOption.collect({
-        case ImapToken.Str(string) => sequenceSetFromString(string) 
+        case ImapToken.Str(string, _) => sequenceSetFromString(string) 
       }).flatten match {
         case None => UnexpectedArguments(allTokens)
         case Some(set) => parameters.lift(1) match {
-          case Some(ImapToken.Str(string)) => CommandSuccess(Copy(tag, set, string))
+          case Some(ImapToken.Str(string, _)) => CommandSuccess(Copy(tag, set, string))
           case _ => UnexpectedArguments(allTokens)
         }
       }
     case "UID" => parameters.lift(1) match {
-      case Some(ImapToken.Str(subCmdName)) => parseCommand(tag, subCmdName, parameters.drop(2), allTokens) match {
+      case Some(ImapToken.Str(subCmdName, _)) => parseCommand(tag, subCmdName, parameters.drop(2), allTokens) match {
         case fail: Failure => fail
         case CommandSuccess(cmd: Copy) => CommandSuccess(Uid(tag, UidCommand.Copy(cmd)))
         case CommandSuccess(cmd: Fetch) => CommandSuccess(Uid(tag, UidCommand.Fetch(cmd)))
@@ -220,9 +223,9 @@ trait TokenSetToClientCommand {
   }
   
   def fetchItemFromTokens(tokens: Seq[ImapToken]): Option[FetchItem] = tokens match {
-    case Seq(ImapToken.Str("ALL")) => Some(Left(FetchMacro.All))
-    case Seq(ImapToken.Str("FAST")) => Some(Left(FetchMacro.Fast))
-    case Seq(ImapToken.Str("FULL")) => Some(Left(FetchMacro.Full))
+    case Seq(ImapToken.Str("ALL", _)) => Some(Left(FetchMacro.All))
+    case Seq(ImapToken.Str("FAST", _)) => Some(Left(FetchMacro.Fast))
+    case Seq(ImapToken.Str("FULL", _)) => Some(Left(FetchMacro.Full))
     case Seq(ImapToken.List('(', tokens)) => fetchDataItemsFromTokens(tokens).map(Right(_))
     case _ => None
   }
@@ -244,19 +247,19 @@ trait TokenSetToClientCommand {
   def fetchDataItemFromTokens(tokens: Seq[ImapToken]): Option[(FetchDataItem, Seq[ImapToken])] = {
     if (tokens.isEmpty) return None
     tokens.head match {
-      case ImapToken.Str("BODYSTRUCTURE") => Some(FetchDataItem.BodyStructure -> tokens.drop(1))
-      case ImapToken.Str("ENVELOPE") => Some(FetchDataItem.Envelope -> tokens.drop(1))
-      case ImapToken.Str("FLAGS") => Some(FetchDataItem.Flags -> tokens.drop(1))
-      case ImapToken.Str("INTERNALDATE") => Some(FetchDataItem.InternalDate -> tokens.drop(1))
-      case ImapToken.Str("RFC822") => Some(FetchDataItem.Rfc822 -> tokens.drop(1))
-      case ImapToken.Str("RFC822.HEADER") => Some(FetchDataItem.Rfc822Header -> tokens.drop(1))
-      case ImapToken.Str("RFC822.SIZE") => Some(FetchDataItem.Rfc822Size -> tokens.drop(1))
-      case ImapToken.Str("RFC822.TEXT") => Some(FetchDataItem.Rfc822Text -> tokens.drop(1))
-      case ImapToken.Str("UID") => Some(FetchDataItem.Uid -> tokens.drop(1))
-      case ImapToken.Str("BODY") => tokens.lift(1) match {
+      case ImapToken.Str("BODYSTRUCTURE", _) => Some(FetchDataItem.BodyStructure -> tokens.drop(1))
+      case ImapToken.Str("ENVELOPE", _) => Some(FetchDataItem.Envelope -> tokens.drop(1))
+      case ImapToken.Str("FLAGS", _) => Some(FetchDataItem.Flags -> tokens.drop(1))
+      case ImapToken.Str("INTERNALDATE", _) => Some(FetchDataItem.InternalDate -> tokens.drop(1))
+      case ImapToken.Str("RFC822", _) => Some(FetchDataItem.Rfc822 -> tokens.drop(1))
+      case ImapToken.Str("RFC822.HEADER", _) => Some(FetchDataItem.Rfc822Header -> tokens.drop(1))
+      case ImapToken.Str("RFC822.SIZE", _) => Some(FetchDataItem.Rfc822Size -> tokens.drop(1))
+      case ImapToken.Str("RFC822.TEXT", _) => Some(FetchDataItem.Rfc822Text -> tokens.drop(1))
+      case ImapToken.Str("UID", _) => Some(FetchDataItem.Uid -> tokens.drop(1))
+      case ImapToken.Str("BODY", _) => tokens.lift(1) match {
         case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartsFromTokens(bodyTokens).flatMap { parts =>
           tokens.lift(2) match {
-            case Some(ImapToken.Str(offsets)) => fetchOffsetsFromString(offsets) match {
+            case Some(ImapToken.Str(offsets, _)) => fetchOffsetsFromString(offsets) match {
               case None => Some(FetchDataItem.Body(parts) -> tokens.drop(2))
               case Some((offset, count)) =>
                 Some(FetchDataItem.Body(parts, Some(offset), Some(count)) -> tokens.drop(3))
@@ -266,10 +269,10 @@ trait TokenSetToClientCommand {
         }
         case _ => Some(FetchDataItem.NonExtensibleBodyStructure -> tokens.drop(1))
       }
-      case ImapToken.Str("BODY.PEEK") => tokens.lift(1) match {
+      case ImapToken.Str("BODY.PEEK", _) => tokens.lift(1) match {
         case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartsFromTokens(bodyTokens).flatMap { parts =>
           tokens.lift(2) match {
-            case Some(ImapToken.Str(offsets)) => fetchOffsetsFromString(offsets) match {
+            case Some(ImapToken.Str(offsets, _)) => fetchOffsetsFromString(offsets) match {
               case None => Some(FetchDataItem.BodyPeek(parts) -> tokens.drop(2))
               case Some((offset, count)) =>
                 Some(FetchDataItem.BodyPeek(parts, Some(offset), Some(count)) -> tokens.drop(3))
@@ -293,7 +296,7 @@ trait TokenSetToClientCommand {
   def fetchBodyPartsFromTokens(tokens: Seq[ImapToken]): Option[Seq[Imap.BodyPart]] = {
     if (tokens.isEmpty) return Some(Seq.empty)
     else if (!tokens.head.isInstanceOf[ImapToken.Str]) return None
-    val ImapToken.Str(partName) = tokens.head
+    val ImapToken.Str(partName, _) = tokens.head
     val parts = partName.split('.').foldLeft(Option(Seq.empty[Imap.BodyPart])) {
       case (None, _) => None
       case (Some(seq), partPiece) => partPiece match {
@@ -348,7 +351,7 @@ trait TokenSetToClientCommand {
     case ImapToken.List('(', tokens) => tokens.foldLeft(Option(Seq.empty[String])) {
       case (seq, token) => seq.flatMap { seq =>
         token match {
-          case ImapToken.Str(string) => Some(seq :+ string)
+          case ImapToken.Str(string, _) => Some(seq :+ string)
           case _ => None
         }
       }
@@ -357,14 +360,14 @@ trait TokenSetToClientCommand {
   }
     
   def flagFromToken(flag: ImapToken): Option[Imap.Flag] = flag match {
-    case ImapToken.Str("\\Seen") => Some(Imap.Flag.Seen)
-    case ImapToken.Str("\\Answered") => Some(Imap.Flag.Answered)
-    case ImapToken.Str("\\Flagged") => Some(Imap.Flag.Flagged)
-    case ImapToken.Str("\\Deleted") => Some(Imap.Flag.Deleted)
-    case ImapToken.Str("\\Draft") => Some(Imap.Flag.Draft)
-    case ImapToken.Str("\\Recent") => Some(Imap.Flag.Recent)
-    case ImapToken.Str(str) if str.startsWith("X") => Some(Imap.Flag.Extension(str))
-    case ImapToken.Str(str) => Some(Imap.Flag.Keyword(str))
+    case ImapToken.Str("\\Seen", _) => Some(Imap.Flag.Seen)
+    case ImapToken.Str("\\Answered", _) => Some(Imap.Flag.Answered)
+    case ImapToken.Str("\\Flagged", _) => Some(Imap.Flag.Flagged)
+    case ImapToken.Str("\\Deleted", _) => Some(Imap.Flag.Deleted)
+    case ImapToken.Str("\\Draft", _) => Some(Imap.Flag.Draft)
+    case ImapToken.Str("\\Recent", _) => Some(Imap.Flag.Recent)
+    case ImapToken.Str(str, _) if str.startsWith("X") => Some(Imap.Flag.Extension(str))
+    case ImapToken.Str(str, _) => Some(Imap.Flag.Keyword(str))
     case _ => None
   }
   
@@ -383,36 +386,36 @@ trait TokenSetToClientCommand {
   }
   
   def searchCriteria(tokens: Seq[ImapToken]): Option[(SearchCriteria, Seq[ImapToken])] = {
-    tokens.headOption.collect({ case ImapToken.Str(str) => str }).flatMap {
+    tokens.headOption.collect({ case ImapToken.Str(str, _) => str }).flatMap {
       case "ALL" => Some(SearchCriteria.All -> tokens.drop(1))
       case "ANSWERED" => Some(SearchCriteria.Answered -> tokens.drop(1))
       case "BCC" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.Bcc(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.Bcc(string) -> tokens.drop(2)
       }
       case "BEFORE" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.Before(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case "BODY" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.Body(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.Body(string) -> tokens.drop(2)
       }
       case "CC" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.Cc(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.Cc(string) -> tokens.drop(2)
       }
       case "DELETED" => Some(SearchCriteria.Deleted -> tokens.drop(1))
       case "DRAFT" => Some(SearchCriteria.Draft -> tokens.drop(1))
       case "FLAGGED" => Some(SearchCriteria.Flagged -> tokens.drop(1))
       case "FROM" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.From(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.From(string) -> tokens.drop(2)
       }
       case "HEADER" => tokens.lift(1).flatMap(h => tokens.lift(2).map(h -> _)).collect {
-        case (ImapToken.Str(fieldName), ImapToken.Str(string)) =>
+        case (ImapToken.Str(fieldName, _), ImapToken.Str(string, _)) =>
           SearchCriteria.Header(fieldName, string) -> tokens.drop(3)
       }
       case "KEYWORD" => tokens.lift(1).flatMap(flagFromToken(_).map(SearchCriteria.Keyword(_) -> tokens.drop(2)))
       case "LARGER" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => Try(string.toLong).toOption.map(SearchCriteria.Larger(_) -> tokens.drop(2))
+        case ImapToken.Str(string, _) => Try(string.toLong).toOption.map(SearchCriteria.Larger(_) -> tokens.drop(2))
       }.flatten
       case "NEW" => Some(SearchCriteria.New -> tokens.drop(1))
       case "NOT" => searchCriteria(tokens.drop(1)).map {
@@ -420,7 +423,7 @@ trait TokenSetToClientCommand {
       }
       case "OLD" => Some(SearchCriteria.New -> tokens.drop(1))
       case "ON" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.On(d) -> tokens.drop(2)
         }).toOption
       }).flatten
@@ -432,39 +435,39 @@ trait TokenSetToClientCommand {
       case "RECENT" => Some(SearchCriteria.Recent -> tokens.drop(1))
       case "SEEN" => Some(SearchCriteria.Seen -> tokens.drop(1))
       case "SENTBEFORE" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.SentBefore(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case "SENTON" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.SentOn(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case "SENTSINCE" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.SentSince(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case "SINCE" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => Try(TokenSetToClientCommand.dateFormat.parseLocalDate(string)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
           SearchCriteria.Since(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case "SMALLER" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => Try(string.toLong).toOption.map(SearchCriteria.Smaller(_) -> tokens.drop(2))
+        case ImapToken.Str(string, _) => Try(string.toLong).toOption.map(SearchCriteria.Smaller(_) -> tokens.drop(2))
       }.flatten
       case "SUBJECT" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.Subject(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.Subject(string) -> tokens.drop(2)
       }
       case "TEXT" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.Text(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.Text(string) -> tokens.drop(2)
       }
       case "TO" => tokens.lift(1).collect {
-        case ImapToken.Str(string) => SearchCriteria.To(string) -> tokens.drop(2)
+        case ImapToken.Str(string, _) => SearchCriteria.To(string) -> tokens.drop(2)
       }
       case "UID" => tokens.lift(1).collect({
-        case ImapToken.Str(string) => sequenceSetFromString(string).map(SearchCriteria.Uid(_) -> tokens.drop(2))
+        case ImapToken.Str(string, _) => sequenceSetFromString(string).map(SearchCriteria.Uid(_) -> tokens.drop(2))
       }).flatten
       case "UNANSWERED" => Some(SearchCriteria.Seen -> tokens.drop(1))
       case "UNDELETED" => Some(SearchCriteria.Seen -> tokens.drop(1))
@@ -501,11 +504,6 @@ trait TokenSetToClientCommand {
 }
 
 object TokenSetToClientCommand {
-  //DQUOTE date-day-fixed "-" date-month "-" date-year SP time SP zone DQUOTE
-  val dateTimeFormat = DateTimeFormat.forPattern("dd-MMM-yyyy HH:mm:ss Z")
-  //date-day "-" date-month "-" date-year
-  val dateFormat = DateTimeFormat.forPattern("dd-MMM-yyyy")
-  
   class Stage extends StatefulStage[Seq[ImapToken], ClientCommand.ParseResult] with TokenSetToClientCommand {
     override def initial = new State {
       override def onPush(chunk: Seq[ImapToken], ctx: Context[ClientCommand.ParseResult]): SyncDirective = {

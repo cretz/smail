@@ -1,7 +1,6 @@
 package scimap
 package handler
 
-import java.util.Base64
 import scala.collection.immutable.NumericRange
 import scala.collection.immutable.TreeSet
 
@@ -23,6 +22,8 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       case (_, None) =>
         // This means that no command was parsed...TODO: handle server-initiated update
         Seq.empty
+      case (_, Some(cli.CommandSuccess(cli.Logout(tag)))) =>
+        handleLogout(tag)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(auth: cli.Authenticate))) =>
         requestAuthentication(auth)
       case (State.NotAuthenticated, Some(cli.UnrecognizedCommand(seq))) if pendingAuthentication.isDefined =>
@@ -37,6 +38,8 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
         handleNoop(tag)
       case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
         handleFetch(fetch)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
+        handleClose(tag)
       case v =>
         sys.error("Unknown state/command: " + v)
     }
@@ -47,6 +50,12 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       val caps = server.capabilities()
       state = State.NotAuthenticated
       Seq(ser.Ok("Service ready", None, Some(ser.StatusResponseCode.Capability(caps))))
+  }
+  
+  def handleLogout(tag: String): Seq[ser] = {
+    server.close()
+    state = State.Logout
+    Seq(ser.Bye("Server logging out"), ser.Ok("LOGOUT completed", Some(tag)), ser.CloseConnection)
   }
   
   def handleCapabilities(tag: String): Seq[ser] = {
@@ -69,9 +78,9 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     val tag = pendingAuthentication.get.tag
     pendingAuthentication = None
     tokens match {
-      case Seq(ImapToken.Str(userPass)) =>
+      case Seq(ImapToken.Str(userPass, _)) =>
         // Per RFC-2595, this is a base 64'd string of the null char + UTF-8 user/pass separated by a null char
-        val bytes = Base64.getDecoder().decode(userPass)
+        val bytes = Util.base64Decode(userPass)
         if (bytes.headOption != Some(0)) Seq(ser.Bad("Unable to read credentials", Some(tag)))
         else bytes.tail.indexOf(0) match {
           case -1 => Seq(ser.Bad("Unable to read credentials", Some(tag)))
@@ -163,7 +172,7 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     msgs.map { case (seq, msg) =>
       val fetches: Seq[ser.FetchDataItem] = items.map {
         case cli.FetchDataItem.NonExtensibleBodyStructure =>
-          ser.FetchDataItem.NonExtensibleBodyStructure(msg.bodyStructure)
+          ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension))
         case cli.FetchDataItem.Body(parts, offset, count) =>
           ser.FetchDataItem.Body(
             parts,
@@ -181,9 +190,9 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
             offset
           )
         case cli.FetchDataItem.BodyStructure =>
-          ser.FetchDataItem.BodyStructure(msg.bodyStructure)
+          ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure))
         case cli.FetchDataItem.Envelope =>
-          ser.FetchDataItem.Envelope(msg.envelope)
+          ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope))
         case cli.FetchDataItem.Flags =>
           ser.FetchDataItem.Flags(msg.flags.toSeq)
         case cli.FetchDataItem.InternalDate =>
@@ -213,6 +222,92 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       }
       ser.Fetch(seq, fetches)
     } :+ ser.Ok("FETCH completed", Some(fetch.tag))
+  }
+  
+  def bodyStructureToImapToken(structure: Imap.BodyStructure): ImapToken.List = {
+    import ImapToken._
+    @inline
+    def mapToToken(map: Map[String, String]): ImapToken =
+      if (map.isEmpty) Nil
+      else List('(', map.map(v => Seq(Str(v._1, true), Str(v._2, true))).flatten.toSeq)
+    structure match {
+      case Imap.BodyStructureMulti(parts, subType, extension) =>
+        // TODO:
+        ???
+      case str: Imap.BodyStructureSingle =>
+        var list = List('(', Seq(
+          Str(str.bodyType, true),
+          Str(str.subType, true),
+          mapToToken(str.parameters),
+          str.id.map(Str(_, true)).getOrElse(Nil),
+          str.description.map(Str(_, true)).getOrElse(Nil),
+          str.encoding.map(Str(_, true)).getOrElse(Nil),
+          Str(str.size.toString)
+        ))
+        // Add extra things?
+        var addToList = Seq.empty[ImapToken]
+        // Lines only get added if present
+        str.lineCount.foreach(v => addToList :+= Str(v.toString))
+        // Same with extension
+        str.extension.foreach { ext =>
+          if (!ext.md5.isEmpty || !ext.disposition.isEmpty || !ext.language.isEmpty || !ext.location.isEmpty) {
+            addToList :+= ext.md5.map(Str(_, true)).getOrElse(Nil)
+            if (!ext.disposition.isEmpty || !ext.language.isEmpty || !ext.location.isEmpty) {
+              addToList ++= ext.disposition.map({ case (name, vals) =>
+                Seq(Str(name, true), mapToToken(vals))
+              }).getOrElse(Seq(Nil))
+              if (!ext.language.isEmpty || !ext.location.isEmpty) {
+                addToList :+= (ext.language match {
+                  case Seq() => Nil
+                  case Seq(single) => Str(single, true)
+                  case multi => List('(', multi.map(Str(_, true)))
+                })
+                if (!ext.location.isEmpty) addToList :+= List('(', ext.location.map(Str(_, true)))
+              }
+            }
+          }
+        }
+        list.copy(values = list.values ++ addToList)
+      case _ => ???
+    }
+  }
+  
+  def envelopeToImapToken(env: Imap.Envelope): ImapToken.List = {
+    import ImapToken._
+    @inline
+    def addrsOrNil(addrs: Seq[Imap.MailAddress]): ImapToken =
+      if (addrs.isEmpty) Nil else List('(', addrs.map(mailAddressToImapToken))
+    List('(', Seq(
+      env.date.map(d => Str(Imap.mailDateTimeFormat.format(d), true)).getOrElse(Nil),
+      env.subject.map(Str(_, true)).getOrElse(Nil),
+      addrsOrNil(env.from),
+      addrsOrNil(env.sender),
+      addrsOrNil(env.replyTo),
+      addrsOrNil(env.to),
+      addrsOrNil(env.cc),
+      addrsOrNil(env.bcc),
+      env.inReplyTo.map(m => Str(m._1 + "@" + m._2, true)).getOrElse(Nil),
+      env.messageId.map(m => Str(m._1 + "@" + m._2, true)).getOrElse(Nil)
+    ))
+  }
+  
+  def mailAddressToImapToken(addr: Imap.MailAddress): ImapToken.List = {
+    import ImapToken._
+    addr match {
+      case Imap.MailboxAddress((mailbox, host), personalName) =>
+        // Ignore SMTP "at-domain-list"
+        List('(', Seq(personalName.map(Str(_, true)).getOrElse(Nil), Nil, Str(mailbox, true), Str(host, true)))
+      case Imap.GroupAddress(display, mailboxes) =>
+        List('(', Str(display, true) +:
+          mailboxes.map(mailAddressToImapToken) :+ List('(', Seq(Str(display, true), Nil, Nil, Nil)))
+    }
+  }
+  
+  def handleClose(tag: String): Seq[ser] = {
+    server.flushCurrentMailboxDeleted()
+    server.closeCurrentMailbox()
+    state = State.Authenticated
+    Seq(ser.Ok("CLOSE completed", Some(tag)))
   }
 }
 object HighLevelServerHandler {

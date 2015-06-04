@@ -15,7 +15,7 @@ class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding
   def Str = rule { capture(oneOrMore(!AtomSpecials ~ ANY)) ~> (ImapToken.Str(_)) }
   
   def QuotedStr = rule {
-    '"' ~ clearSB ~ zeroOrMore(QuotedChar) ~ '"' ~ push(sb.toString) ~> (ImapToken.Str(_))
+    '"' ~ clearSB ~ zeroOrMore(QuotedChar) ~ '"' ~ push(sb.toString) ~> (ImapToken.Str(_, true))
   }
   
   def QuotedChar = rule { ("\\\\" | "\\\"" | !ch('\\') | ANY) ~ appendSB }

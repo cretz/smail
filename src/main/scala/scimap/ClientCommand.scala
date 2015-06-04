@@ -1,7 +1,7 @@
 package scimap
 
-import org.joda.time.DateTime
-import org.joda.time.LocalDate
+import java.time.ZonedDateTime
+import java.time.LocalDate
 
 sealed trait ClientCommand {
   def tag: String
@@ -57,7 +57,7 @@ object ClientCommand {
     mailbox: String,
     message: String, 
     flags: Seq[Imap.Flag] = Seq.empty,
-    date: Option[DateTime] = None
+    date: Option[ZonedDateTime] = None
   ) extends ClientCommand with AuthenticatedState
   
   case class Check(tag: String) extends ClientCommand with SelectedState

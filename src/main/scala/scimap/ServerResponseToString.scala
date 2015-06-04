@@ -24,14 +24,14 @@ trait ServerResponseToString {
   def fetchDataItem(item: FetchDataItem): String = {
     import FetchDataItem._
     item match {
-      case NonExtensibleBodyStructure(list) => "BODY " + bodyStructureItem(list)
+      case NonExtensibleBodyStructure(list) => "BODY " + imapToken(list)
       case Body(section, contents, origin) =>
         "BODY[" + section.map(bodyPart).mkString(".") + "]" +
           origin.map("<" + _ + ">").getOrElse("") + " " + literalString(contents)
-      case BodyStructure(list) => "BODYSTRUCTURE " + bodyStructureItem(list)
-      case Envelope(list) => "ENVELOPE " + bodyStructureItem(list)
+      case BodyStructure(list) => "BODYSTRUCTURE " + imapToken(list)
+      case Envelope(list) => "ENVELOPE " + imapToken(list)
       case Flags(flags) => "FLAGS (" + flags.mkString(" ") + ")"
-      case InternalDate(date) => "INTERNALDATE " + TokenSetToClientCommand.dateTimeFormat.print(date)
+      case InternalDate(date) => "INTERNALDATE " + safeString(Imap.dateTimeFormat.format(date))
       case Rfc822(contents) => "RFC822 " + literalString(contents)
       case Rfc822Header(contents) => "RFC822.HEADER " + literalString(contents)
       case Rfc822Size(size) => "RFC822.SIZE " + size
@@ -40,12 +40,16 @@ trait ServerResponseToString {
     }
   }
   
-  def bodyStructureItem(item: Imap.BodyStructureItem): String = {
-    import Imap.BodyStructureItem._
-    item match {
+  def imapToken(token: ImapToken): String = {
+    import ImapToken._
+    token match {
       case Nil => "NIL"
-      case Literal(value) => safeString(value)
-      case List(values) => "(" + values.map(bodyStructureItem) + ")"
+      case Str(value, true) =>
+        val str = safeString(value)
+        if (str.charAt(0) == '"') str else '"' + str + '"'
+      case Str(value, _) => safeString(value)
+      case List('(', values) => '(' + values.map(imapToken).mkString(" ") + ')'
+      case tok => sys.error("Unsupported token: " + tok)
     }
   }
   
@@ -126,7 +130,7 @@ trait ServerResponseToString {
   def safeString(string: String): String = {
     // Only if the string contains a slash or a double quote do we want to double quote it
     val result = string.replace("\\", "\\\\").replace("\"","\\\"")
-    if (result.length > 0 && result.length == string.length) result
+    if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
     else '"' + result + '"'
   }
 }

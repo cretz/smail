@@ -1,7 +1,8 @@
 package scimap
 package handler
 
-import org.joda.time.DateTime
+import java.time.ZonedDateTime
+import scimap.Imap.BodyStructureSingleExtension
 
 // Basically only for testing
 class InMemoryServer extends HighLevelServer {
@@ -24,6 +25,12 @@ class InMemoryServer extends HighLevelServer {
       currentMailbox = Some(ret)
       ret
     }
+  
+  def flushCurrentMailboxDeleted(): Unit = currentMailbox.foreach(_.flushDeleted())
+  
+  def closeCurrentMailbox(): Unit = currentMailbox = None
+  
+  def close(): Unit = { }
 }
 object InMemoryServer {
   import HighLevelServer._
@@ -54,18 +61,55 @@ object InMemoryServer {
       }
       Some(msgs)
     }
+    
+    def flushDeleted(): Unit = messages = messages.filterNot(_.flags.contains(Imap.Flag.Deleted))
   }
   
   class InMemoryMessage(
     @volatile var uid: BigInt,
     @volatile var flags: Set[Imap.Flag],
-    @volatile var headers: Map[String, String],
+    @volatile var headers: MailHeaders,
     @volatile var body: String
   ) extends Message {
-    def bodyStructure: Imap.BodyStructureItem.List = ???
-    def envelope: Imap.BodyStructureItem.List = ???
-    def internalDate: DateTime = ???
-    def size: BigInt = ???
+    def bodyStructure: Imap.BodyStructure = {
+      // Just single part for now...
+      Imap.BodyStructureSingle(
+        bodyType = "TEXT",
+        subType = "PLAIN",
+        parameters = Map("CHARSET" -> "US-ASCII"),
+        id = None,
+        description = None,
+        encoding = Some("7BIT"),
+        size = body.length,
+        lineCount = Some("\r\n".r.findAllMatchIn(body).length + 1),
+        extension = Some(
+          BodyStructureSingleExtension(
+            // TODO: check encoding
+            md5 = Some(Util.base64Encode(Util.md5(body.getBytes)))
+            // TODO: other info?
+          )
+        )
+      )
+    }
+    
+    def envelope: Imap.Envelope = {
+      Imap.Envelope(
+        date = headers(MailHeaders.OrigDate),
+        subject = headers(MailHeaders.Subject),
+        from = headers(MailHeaders.From).getOrElse(Seq.empty),
+        sender = headers(MailHeaders.Sender).toSeq,
+        replyTo = headers(MailHeaders.From).getOrElse(Seq.empty),
+        to = headers(MailHeaders.From).getOrElse(Seq.empty),
+        cc = headers(MailHeaders.From).getOrElse(Seq.empty),
+        bcc = headers(MailHeaders.From).getOrElse(Seq.empty),
+        inReplyTo = headers(MailHeaders.InReplyTo),
+        messageId = headers(MailHeaders.MessageId)
+      )
+    }
+    
+    def internalDate: ZonedDateTime = headers(MailHeaders.OrigDate).getOrElse(sys.error("Can't find date"))
+    // TODO: confirm whether this is just body or not
+    def size: BigInt = body.length
     
     def getBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String] = {
       val result = peekBody(part, offset, count)
@@ -79,7 +123,9 @@ object InMemoryServer {
         case Seq() => peekBody(Seq(Imap.BodyPart.Header), offset.map(_ => 0), count).flatMap(h =>
           peekBody(Seq(Imap.BodyPart.Text), offset.map(_ => 0), count).map(h + "\r\n\r\n" + _)
         )
-        case Seq(Imap.BodyPart.Header) => Some(headers.map(h => h._1 + ": " + h._2).mkString("\r\n"))
+        case Seq(Imap.BodyPart.Header) => Some(
+          headers.headers().map(h => h._1 + ": " + h._2).mkString("\r\n")
+        )
         case Seq(Imap.BodyPart.Text) => Some(body)
         case _ => None
       }
