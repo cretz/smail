@@ -124,13 +124,13 @@ object ClientCommand {
   object FetchDataItem {
     case object NonExtensibleBodyStructure extends FetchDataItem
     case class Body(
-      section: Seq[Imap.BodyPart],
+      part: Imap.BodyPart,
       octetOffset: Option[Int] = None,
       octetCount: Option[Int] = None
     ) extends FetchDataItem
     
     case class BodyPeek(
-      section: Seq[Imap.BodyPart],
+      part: Imap.BodyPart,
       octetOffset: Option[Int] = None,
       octetCount: Option[Int] = None
     ) extends FetchDataItem

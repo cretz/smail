@@ -1,17 +1,15 @@
 package scimap
 
-import akka.stream.stage.StatefulStage
-import akka.util.ByteString
-import akka.stream.stage.SyncDirective
-import akka.stream.stage.Context
 import scala.util.Try
 import java.time.ZonedDateTime
 import java.time.LocalDate
 
-trait TokenSetToClientCommand {
+trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResult) {
   import ClientCommand._
   
   var waitingForText = Seq.empty[ImapToken]
+  
+  def apply(chunk: Seq[ImapToken]): ParseResult = getClientCommand(chunk)
   
   def getClientCommand(chunk: Seq[ImapToken]): ParseResult = {
     var properChunk = waitingForText ++ chunk
@@ -257,30 +255,30 @@ trait TokenSetToClientCommand {
       case ImapToken.Str("RFC822.TEXT", _) => Some(FetchDataItem.Rfc822Text -> tokens.drop(1))
       case ImapToken.Str("UID", _) => Some(FetchDataItem.Uid -> tokens.drop(1))
       case ImapToken.Str("BODY", _) => tokens.lift(1) match {
-        case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartsFromTokens(bodyTokens).flatMap { parts =>
+        case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartFromTokens(bodyTokens).flatMap { part =>
           tokens.lift(2) match {
             case Some(ImapToken.Str(offsets, _)) => fetchOffsetsFromString(offsets) match {
-              case None => Some(FetchDataItem.Body(parts) -> tokens.drop(2))
+              case None => Some(FetchDataItem.Body(part) -> tokens.drop(2))
               case Some((offset, count)) =>
-                Some(FetchDataItem.Body(parts, Some(offset), Some(count)) -> tokens.drop(3))
+                Some(FetchDataItem.Body(part, Some(offset), Some(count)) -> tokens.drop(3))
             }
-            case _ => Some(FetchDataItem.Body(parts) -> tokens.drop(2))
+            case _ => Some(FetchDataItem.Body(part) -> tokens.drop(2))
           }
         }
         case _ => Some(FetchDataItem.NonExtensibleBodyStructure -> tokens.drop(1))
       }
       case ImapToken.Str("BODY.PEEK", _) => tokens.lift(1) match {
-        case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartsFromTokens(bodyTokens).flatMap { parts =>
+        case Some(ImapToken.List('[', bodyTokens)) => fetchBodyPartFromTokens(bodyTokens).flatMap { part =>
           tokens.lift(2) match {
             case Some(ImapToken.Str(offsets, _)) => fetchOffsetsFromString(offsets) match {
-              case None => Some(FetchDataItem.BodyPeek(parts) -> tokens.drop(2))
+              case None => Some(FetchDataItem.BodyPeek(part) -> tokens.drop(2))
               case Some((offset, count)) =>
-                Some(FetchDataItem.BodyPeek(parts, Some(offset), Some(count)) -> tokens.drop(3))
+                Some(FetchDataItem.BodyPeek(part, Some(offset), Some(count)) -> tokens.drop(3))
             }
-            case _ => Some(FetchDataItem.BodyPeek(parts) -> tokens.drop(2))
+            case _ => Some(FetchDataItem.BodyPeek(part) -> tokens.drop(2))
           }
         }
-        case _ => Some(FetchDataItem.BodyPeek(Seq.empty) -> tokens.drop(1))
+        case _ => Some(FetchDataItem.BodyPeek(Imap.BodyPart.Part(Seq.empty)) -> tokens.drop(1))
       }
       case _ => None
     }
@@ -293,56 +291,29 @@ trait TokenSetToClientCommand {
     else Try(pieces(0).toInt).toOption.flatMap(i => Try(pieces(1).toInt).toOption.map(i -> _))
   }
   
-  def fetchBodyPartsFromTokens(tokens: Seq[ImapToken]): Option[Seq[Imap.BodyPart]] = {
-    if (tokens.isEmpty) return Some(Seq.empty)
+  def fetchBodyPartFromTokens(tokens: Seq[ImapToken]): Option[Imap.BodyPart] = {
+    if (tokens.isEmpty) return Some(Imap.BodyPart.Part(Seq.empty))
     else if (!tokens.head.isInstanceOf[ImapToken.Str]) return None
     val ImapToken.Str(partName, _) = tokens.head
-    val parts = partName.split('.').foldLeft(Option(Seq.empty[Imap.BodyPart])) {
+    val part = partName.split('.').foldLeft(Option(Imap.BodyPart.Part(Seq.empty): Imap.BodyPart)) {
       case (None, _) => None
-      case (Some(seq), partPiece) => partPiece match {
-        case "HEADER" => seq.lastOption match {
-          case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Header)
-          case _ => None
-        } 
-        case "FIELDS" => seq.lastOption match {
-          case Some(Imap.BodyPart.Header) =>
-            Some(seq.dropRight(1) :+ Imap.BodyPart.HeaderFields(Seq.empty))
-          case _ => None
-        }
-        case "NOT" => seq.lastOption match {
-          case Some(_: Imap.BodyPart.HeaderFields) =>
-            Some(seq.dropRight(1) :+ Imap.BodyPart.HeaderFieldsNot(Seq.empty))
-          case _ => None
-        }
-        case "TEXT" => seq.lastOption match {
-          case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Text)
-          case _ => None
-        }
-        case "MIME" => seq.lastOption match {
-          case Some(_: Imap.BodyPart.Number) => Some(seq :+ Imap.BodyPart.Mime)
-          case _ => None
-        }
-        case str => Try(str.toInt).toOption.flatMap { num =>
-          seq.lastOption match {
-            case Some(_: Imap.BodyPart.Number) | None => Some(seq :+ Imap.BodyPart.Number(num))
-            case _ => None
-          }
-        }
-      }
+      case (Some(Imap.BodyPart.Part(nums)), "HEADER") => Some(Imap.BodyPart.Header(nums))
+      case (Some(Imap.BodyPart.Part(nums)), "TEXT") => Some(Imap.BodyPart.Text(nums))
+      case (Some(Imap.BodyPart.Part(nums)), "MIME") => Some(Imap.BodyPart.Header(nums))
+      case (Some(Imap.BodyPart.Header(nums)), "FIELDS") => Some(Imap.BodyPart.HeaderFields(nums, Seq.empty))
+      case (Some(Imap.BodyPart.HeaderFields(nums, fields)), "NOT") => Some(Imap.BodyPart.HeaderFieldsNot(nums, Seq.empty))
+      case (Some(Imap.BodyPart.Part(nums)), num) => Try(num.toInt).toOption.map(i => Imap.BodyPart.Part(nums :+ i))
+      case _ => None
     }
     // Some parts require an extra list, some don't
-    parts.flatMap(_.lastOption) match {
-      case Some(_: Imap.BodyPart.HeaderFields) =>
+    part.flatMap {
+      case part: Imap.BodyPart.HeaderFields =>
         if (tokens.length != 2) None
-        else headerFieldsFromToken(tokens(1)).flatMap { seq =>
-          Some(parts.get.dropRight(1) :+ Imap.BodyPart.HeaderFields(seq))
-        }
-      case Some(_: Imap.BodyPart.HeaderFieldsNot) =>
+        else headerFieldsFromToken(tokens(1)).map(s => part.copy(fields = s))
+      case part: Imap.BodyPart.HeaderFieldsNot =>
         if (tokens.length != 2) None
-        else headerFieldsFromToken(tokens(1)).flatMap { seq =>
-          Some(parts.get.dropRight(1) :+ Imap.BodyPart.HeaderFieldsNot(seq))
-        }
-      case _  if (tokens.length == 1) => parts
+        else headerFieldsFromToken(tokens(1)).map(s => part.copy(fields = s))
+      case _  if tokens.length == 1 => part
       case _ => None
     }
   }
@@ -504,11 +475,5 @@ trait TokenSetToClientCommand {
 }
 
 object TokenSetToClientCommand {
-  class Stage extends StatefulStage[Seq[ImapToken], ClientCommand.ParseResult] with TokenSetToClientCommand {
-    override def initial = new State {
-      override def onPush(chunk: Seq[ImapToken], ctx: Context[ClientCommand.ParseResult]): SyncDirective = {
-        emit(Iterator.single(getClientCommand(chunk)), ctx)
-      }
-    }
-  }
+  def apply(): TokenSetToClientCommand = new TokenSetToClientCommand() { }
 }

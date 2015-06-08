@@ -12,33 +12,54 @@ import java.util.Properties
 import akka.stream.ActorFlowMaterializerSettings
 import scimap.handler.InMemoryServer
 import scimap.handler.HighLevelServerHandler
+import javax.net.ssl.SSLContext
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
+import java.security.SecureRandom
+import javax.net.ssl.TrustManagerFactory
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {
+    val server = new InMemoryServer()
+    val ctx = new JavaMailMemoryServer.Context()
+    try AsResult(f(ctx))
+    finally {
+      if (ctx.storeInitialized) ctx.store.close()
+      ctx.system.shutdown()
+    }
+  }
+}
+object JavaMailMemoryServer {  
+  class Context(val server: InMemoryServer = new InMemoryServer()) {
     implicit val system = ActorSystem("scimap-server")
     implicit val materializer = ActorFlowMaterializer(
       ActorFlowMaterializerSettings(system).withDebugLogging(true)
     )
-    val server = new InMemoryServer()
-    val ctx = new JavaMailMemoryServer.Context(
-      ServerDaemon("127.0.0.1", 143, () => new HighLevelServerHandler(server), true),
-      server
-    )
-    try AsResult(f(ctx))
-    finally {
-      if (ctx.storeInitialized) ctx.store.close()
-      system.shutdown()
-    }
-  }
-}
-object JavaMailMemoryServer {
-  class Context(val daemon: ServerDaemon, val server: InMemoryServer) {
+    
+    var daemon = ServerDaemon("127.0.0.1", 143, () => new HighLevelServerHandler(server), true, None, None)
     
     var username = "foo"
     var password = "bar"
+    var useClientTls = false
+    
+    def useTls(
+      password: String = "changeme",
+      keyStoreResourcePath: String = "/keystore",
+      trustStoreResourcePath: String = "/truststore",
+      cipherSuites: Option[Seq[String]] =
+        Some(Seq("TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA", "TLS_RSA_WITH_AES_128_CBC_SHA"))
+    ): Unit = {
+      useClientTls = true
+      daemon = daemon.copy(
+        sslContext = Some(initSslContext(password, keyStoreResourcePath, trustStoreResourcePath)),
+        cipherSuites = cipherSuites
+      )
+    }
     
     lazy val session = {
-      val session = Session.getDefaultInstance(new Properties())
+      val props = new Properties()
+      if (useClientTls) props.setProperty("mail.imap.starttls.required", "true")
+      val session = Session.getDefaultInstance(props)
       session.setDebug(true)
       session
     }
@@ -50,5 +71,28 @@ object JavaMailMemoryServer {
       storeInitialized = true
       store
     }
+  }
+ 
+  def initSslContext(
+    password: String,
+    keyStoreResourcePath: String,
+    trustStoreResourcePath: String
+  ): SSLContext = {
+    // Most of this taken from akka stream UT
+    val keyStore = KeyStore.getInstance(KeyStore.getDefaultType)
+    keyStore.load(getClass.getResourceAsStream(keyStoreResourcePath), password.toCharArray)
+
+    val trustStore = KeyStore.getInstance(KeyStore.getDefaultType)
+    trustStore.load(getClass.getResourceAsStream(trustStoreResourcePath), password.toCharArray)
+
+    val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm)
+    keyManagerFactory.init(keyStore, password.toCharArray)
+
+    val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm)
+    trustManagerFactory.init(trustStore)
+
+    val context = SSLContext.getInstance("TLS")
+    context.init(keyManagerFactory.getKeyManagers, trustManagerFactory.getTrustManagers, new SecureRandom)
+    context
   }
 }

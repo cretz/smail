@@ -131,12 +131,12 @@ object Imap {
 
   sealed trait BodyPart
   object BodyPart {
-    case class Number(num: Int) extends BodyPart
-    case object Header extends BodyPart
-    case class HeaderFields(fields: Seq[String]) extends BodyPart
-    case class HeaderFieldsNot(fields: Seq[String]) extends BodyPart
-    case object Mime extends BodyPart
-    case object Text extends BodyPart
+    case class Part(nums: Seq[Int]) extends BodyPart
+    case class Header(nums: Seq[Int]) extends BodyPart
+    case class HeaderFields(nums: Seq[Int], fields: Seq[String]) extends BodyPart 
+    case class HeaderFieldsNot(nums: Seq[Int], fields: Seq[String]) extends BodyPart
+    case class Mime(nums: Seq[Int]) extends BodyPart
+    case class Text(nums: Seq[Int]) extends BodyPart
   }
   
   case class Envelope(
@@ -148,19 +148,42 @@ object Imap {
     to: Seq[MailAddress] = Seq.empty,
     cc: Seq[MailAddress] = Seq.empty,
     bcc: Seq[MailAddress] = Seq.empty,
-    inReplyTo: Option[(String, String)] = None,
+    inReplyTo: Seq[(String, String)] = Seq.empty,
     messageId: Option[(String, String)] = None
   )
   
   sealed trait MailAddress {
     override def toString: String = ???
   }
+  object MailAddress {
+    def safeString(string: String): String = {
+      // Only if the string contains a slash, double quote, or a space do we want to double quote it
+      val result = string.replace("\\", "\\\\").replace("\"","\\\"")
+      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
+      else '"' + result + '"'
+    }
+
+    def safeDomain(string: String): String = {
+      // Only if the string contains a bracket, double quote, or a space do we want to double quote it
+      val result = string.replace("\\", "\\\\").replace("[","\\[").replace("]","\\]")
+      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
+      else '[' + result + ']'
+    }
+  }
+
   case class MailboxAddress(
     mailbox: (String, String),
     displayName: Option[String] = None
-  ) extends MailAddress
+  ) extends MailAddress {
+    override def toString: String = {
+      val addr = MailAddress.safeString(mailbox._1) + '@' + MailAddress.safeDomain(mailbox._2)
+      displayName.map(MailAddress.safeString).map('[' + _ + "] <" + addr + '>').getOrElse(addr)
+    }
+  }
   case class GroupAddress(
     displayName: String,
     mailboxes: Seq[MailboxAddress]
-  ) extends MailAddress
+  ) extends MailAddress {
+    override def toString: String = MailAddress.safeString(displayName) + mailboxes.mkString(":", ",", ";")
+  }
 }

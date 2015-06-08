@@ -4,19 +4,23 @@ import akka.stream.scaladsl.Tcp
 import akka.actor.ActorSystem
 import akka.stream.FlowMaterializer
 import scimap.handler.ServerHandler
+import scimap.handler.FlowBuilder
 import scala.util.Try
 import scimap.handler.HighLevelServerHandler
+import javax.net.ssl.SSLContext
+import scala.concurrent.Future
 
 case class ServerDaemon(
   interface: String,
   port: Int,
   handler: () => ServerHandler,
-  debug: Boolean
+  debug: Boolean,
+  sslContext: Option[SSLContext],
+  cipherSuites: Option[Seq[String]]
 )(implicit system: ActorSystem, mat: FlowMaterializer) {
-  val future = Tcp().bind(interface, port).runForeach(_.handleWith(ServerHandler.flow(handler, debug)))
   
-  import system.dispatcher
-  future.onComplete { println("DONE!!", _) }
+  def start(): Future[Unit] = Tcp().bind(interface, port).runForeach(_.handleWith(
+    FlowBuilder(debug, sslContext, cipherSuites).byteStringToByteString(handler)))
 }
 object ServerDaemon {
   def apply(conf: Config.Server.Daemon, debug: Boolean = false)
@@ -28,6 +32,9 @@ object ServerDaemon {
           case Left(handler) => () => handler.newInstance()
           case Right(server) => () => new HighLevelServerHandler(server.newInstance())
         },
-        debug = debug
+        debug = debug,
+        // TODO: SSL config
+        sslContext = None,
+        cipherSuites = None
       )
 }

@@ -1,13 +1,15 @@
 package scimap
 
-import akka.stream.stage.StatefulStage
-import akka.stream.stage.Context
-import akka.stream.stage.SyncDirective
 import scala.annotation.tailrec
 
-trait StringToTokenSet {
+trait StringToTokenSet extends (String => Seq[Seq[ImapToken]]) {
   var tokenBuffer = Seq.empty[ImapToken]
   val buffer = new StringBuilder
+  
+  def apply(str: String): Seq[Seq[ImapToken]] ={
+    appendString(str)
+    nextTokenSets()
+  }
   
   def appendString(str: String): Unit = {
     buffer.append(str)
@@ -20,7 +22,7 @@ trait StringToTokenSet {
     tokenBuffer ++= result.get
     
     // Break on newlines or count prefixes
-    val (sets, newBuffer) = StringToTokenSet.splitTokensOnNewlineOrCountPrefix(tokenBuffer)
+    val (sets, newBuffer) = splitTokensOnNewlineOrCountPrefix(tokenBuffer)
     // Trim up the string to as far as we got
     // Note, if we ended with a count prefix, we must not pass it
     sets.headOption.flatMap(_.lastOption) match {
@@ -31,9 +33,7 @@ trait StringToTokenSet {
     tokenBuffer = newBuffer
     sets
   }
-}
 
-object StringToTokenSet {
   def splitTokensOnNewlineOrCountPrefix(
     input: Seq[ImapToken],
     tokens: Seq[Seq[ImapToken]] = Seq.empty
@@ -53,13 +53,8 @@ object StringToTokenSet {
     }
     ret -> leftover
   }
-  
-  class Stage extends StatefulStage[String, Seq[ImapToken]] with StringToTokenSet {
-    override def initial = new State {
-      override def onPush(chunk: String, ctx: Context[Seq[ImapToken]]): SyncDirective = {
-        appendString(chunk)
-        emit(nextTokenSets().iterator, ctx)
-      }
-    }
-  }
+}
+
+object StringToTokenSet {
+  def apply(): StringToTokenSet = new StringToTokenSet() { }
 }

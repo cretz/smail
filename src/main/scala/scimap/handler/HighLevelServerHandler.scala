@@ -28,12 +28,16 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
         requestAuthentication(auth)
       case (State.NotAuthenticated, Some(cli.UnrecognizedCommand(seq))) if pendingAuthentication.isDefined =>
         handlePendingAuthentication(seq)
+      case (State.NotAuthenticated, Some(cli.CommandSuccess(cli.StartTls(tag)))) =>
+        Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls)
       case (State.NotAuthenticated, _) =>
         failAndClose("Not authenticated")
       case (_, Some(cli.CommandSuccess(cli.Capability(tag)))) =>
         handleCapabilities(tag)
-      case (State.Authenticated, Some(cli.CommandSuccess(cli.Examine(tag, mailbox)))) =>
-        handleExamine(tag, mailbox)
+      case (s, Some(cli.CommandSuccess(cli.Examine(tag, mailbox)))) if s >= State.Authenticated =>
+        handleSelectOrExamine(tag, mailbox, false)
+      case (s, Some(cli.CommandSuccess(cli.Select(tag, mailbox)))) if s >= State.Authenticated =>
+        handleSelectOrExamine(tag, mailbox, true)
       case (_, Some(cli.CommandSuccess(cli.Noop(tag)))) =>
         handleNoop(tag)
       case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
@@ -99,11 +103,14 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     }
   }
   
-  def handleExamine(tag: String, mailbox: String): Seq[ser] = {
-    server.examine(mailbox) match {
+  def handleSelectOrExamine(tag: String, mailbox: String, isSelect: Boolean): Seq[ser] = {
+    server.select(mailbox, !isSelect) match {
       case None => Seq(ser.No("Mailbox not found", Some(tag)))
       case Some(result) =>
         state = State.Selected
+        val okInfo =
+          if (isSelect) "SELECT" -> ser.StatusResponseCode.ReadWrite
+          else "EXAMINE" -> ser.StatusResponseCode.ReadOnly
         Seq(
           ser.Exists(result.exists),
           ser.Recent(result.recent),
@@ -116,7 +123,7 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
           ser.Ok("Permanent flags", None, Some(ser.StatusResponseCode.PermanentFlags(result.permanentFlags.toSeq))),
           ser.Ok("UIDs valid", None, Some(ser.StatusResponseCode.UidValidity(result.uidValidity))),
           ser.Ok("Predicted next UID", None, Some(ser.StatusResponseCode.UidNext(result.nextUid))),
-          ser.Ok("EXAMINE completed", Some(tag), Some(ser.StatusResponseCode.ReadOnly))
+          ser.Ok(okInfo._1 + " completed", Some(tag), Some(okInfo._2))
         )
     }
   }
@@ -131,7 +138,7 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     responses :+ ser.Ok("NOOP completed", Some(tag))
   }
   
-  def handleFetch(fetch: cli.Fetch): Seq[ServerResponse] = {
+  def handleFetch(fetch: cli.Fetch): Seq[ser] = {
     val mailbox = server.currentMailbox.getOrElse(return Seq(ser.Bad("No mailbox selected", Some(fetch.tag))))
     
     // Get proper sequences to fetch
@@ -163,67 +170,77 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
         Seq(cli.FetchDataItem.Flags, cli.FetchDataItem.InternalDate,
           cli.FetchDataItem.Rfc822Size)
       case Left(ClientCommand.FetchMacro.Full) =>
-        Seq(cli.FetchDataItem.Flags, cli.FetchDataItem.InternalDate,
-          cli.FetchDataItem.Rfc822Size, cli.FetchDataItem.Envelope, cli.FetchDataItem.Body(Seq.empty))
+        Seq(cli.FetchDataItem.Flags, cli.FetchDataItem.InternalDate, cli.FetchDataItem.Rfc822Size,
+          cli.FetchDataItem.Envelope, cli.FetchDataItem.Body(Imap.BodyPart.Part(Seq.empty)))
       case Right(seq) => seq
     }
 
     // Convert to fetch responses and add OK at the end
-    msgs.map { case (seq, msg) =>
-      val fetches: Seq[ser.FetchDataItem] = items.map {
+    msgs.flatMap { case (seq, msg) =>
+      val fetches: Seq[ser.FetchDataItem] = items.flatMap {
         case cli.FetchDataItem.NonExtensibleBodyStructure =>
-          ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension))
-        case cli.FetchDataItem.Body(parts, offset, count) =>
-          ser.FetchDataItem.Body(
-            parts,
-            msg.getBody(parts, offset, count).getOrElse(
-              return Seq(ser.Bad("Unable to get requested part", Some(fetch.tag)))
-            ),
-            offset
-          )
-        case cli.FetchDataItem.BodyPeek(parts, offset, count) =>
-          ser.FetchDataItem.Body(
-            parts,
-            msg.peekBody(parts, offset, count).getOrElse(
-              return Seq(ser.Bad("Unable to get requested part", Some(fetch.tag)))
-            ),
-            offset
-          )
+          Seq(ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension)))
+        case cli.FetchDataItem.Body(part, offset, count) =>
+          val res = fetchBodyPart(msg, part, offset, count).toSeq
+          msg.markSeen()
+          res
+        case cli.FetchDataItem.BodyPeek(part, offset, count) =>
+          fetchBodyPart(msg, part, offset, count).toSeq
         case cli.FetchDataItem.BodyStructure =>
-          ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure))
+          Seq(ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure)))
         case cli.FetchDataItem.Envelope =>
-          ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope))
+          Seq(ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope)))
         case cli.FetchDataItem.Flags =>
-          ser.FetchDataItem.Flags(msg.flags.toSeq)
+          Seq(ser.FetchDataItem.Flags(msg.flags.toSeq))
         case cli.FetchDataItem.InternalDate =>
-          ser.FetchDataItem.InternalDate(msg.internalDate)
+          Seq(ser.FetchDataItem.InternalDate(msg.internalDate))
         case cli.FetchDataItem.Rfc822 =>
-          ser.FetchDataItem.Rfc822(
-            msg.getBody(Seq.empty, None, None).getOrElse(
-              return Seq(ser.Bad("Unable to get RFC822 body", Some(fetch.tag)))
-            )
-          )
+          val headers = msg.getHeaders(Seq.empty, Seq.empty)
+          val text = msg.getText(Seq.empty, None, None).getOrElse("")
+          Seq(ser.FetchDataItem.Rfc822(headers.mkString("\r\n") + s"\r\n\r\n$text"))
         case cli.FetchDataItem.Rfc822Header =>
-          ser.FetchDataItem.Rfc822Header(
-            msg.getBody(Seq(Imap.BodyPart.Header), None, None).getOrElse(
-              return Seq(ser.Bad("Unable to get RFC822 Header body", Some(fetch.tag)))
-            )
-          )
+          Seq(ser.FetchDataItem.Rfc822Header(msg.getHeaders(Seq.empty, Seq.empty).mkString("\r\n") + "\r\n"))
         case cli.FetchDataItem.Rfc822Size =>
-          ser.FetchDataItem.Rfc822Size(msg.size)
+          Seq(ser.FetchDataItem.Rfc822Size(msg.size))
         case cli.FetchDataItem.Rfc822Text =>
-          ser.FetchDataItem.Rfc822Text(
-            msg.getBody(Seq(Imap.BodyPart.Text), None, None).getOrElse(
-              return Seq(ser.Bad("Unable to get RFC822 Text body", Some(fetch.tag)))
-            )
-          )
+          msg.getText(Seq.empty, None, None).map(ser.FetchDataItem.Rfc822Text(_)).toSeq
         case cli.FetchDataItem.Uid =>
-          ser.FetchDataItem.Uid(msg.uid)
+          Seq(ser.FetchDataItem.Uid(msg.uid))
       }
-      ser.Fetch(seq, fetches)
+      if (fetches.isEmpty) Seq.empty else Seq(ser.Fetch(seq, fetches))
     } :+ ser.Ok("FETCH completed", Some(fetch.tag))
   }
   
+  def fetchBodyPart(
+    msg: HighLevelServer.Message,
+    part: Imap.BodyPart,
+    offset: Option[Int] = None,
+    count: Option[Int] = None
+  ): Option[ser.FetchDataItem.Body] = {
+    @inline
+    def substr(str: String) =
+      if (!offset.isDefined) str
+      else str.substring(offset.get, Math.min(str.length, count.getOrElse(str.length) - offset.get))
+    def headerLinesToStr(lines: Seq[String]) =
+      if (lines.isEmpty) None
+      else Some(substr(lines.mkString("\r\n")) + "\r\n") // TODO: where to substr this?
+    part match {
+      case Imap.BodyPart.Part(nums) =>
+        msg.getPart(nums).map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+      case Imap.BodyPart.Header(nums) =>
+        headerLinesToStr(msg.getHeaders(nums, Seq.empty)).map(s => ser.FetchDataItem.Body(part, s, offset))
+      case Imap.BodyPart.HeaderFields(nums, fields) =>
+        val lines = fields.flatMap(msg.getHeader(nums, _))
+        headerLinesToStr(lines).map(s => ser.FetchDataItem.Body(part, s, offset))
+      case Imap.BodyPart.HeaderFieldsNot(nums, fields) =>
+        headerLinesToStr(msg.getHeaders(nums, fields)).map(s => ser.FetchDataItem.Body(part, s, offset))
+      case Imap.BodyPart.Mime(nums) =>
+        msg.getMime(nums).map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+      case Imap.BodyPart.Text(nums) =>
+        msg.getText(nums, offset, count).map(s => ser.FetchDataItem.Body(part, s, offset))
+    }
+  }
+
   def bodyStructureToImapToken(structure: Imap.BodyStructure): ImapToken.List = {
     import ImapToken._
     @inline
@@ -286,7 +303,7 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       addrsOrNil(env.to),
       addrsOrNil(env.cc),
       addrsOrNil(env.bcc),
-      env.inReplyTo.map(m => Str(m._1 + "@" + m._2, true)).getOrElse(Nil),
+      if (env.inReplyTo.isEmpty) Nil else List('(', env.inReplyTo.map(m => Str(m._1 + "@" + m._2, true))),
       env.messageId.map(m => Str(m._1 + "@" + m._2, true)).getOrElse(Nil)
     ))
   }

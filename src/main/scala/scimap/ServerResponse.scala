@@ -109,7 +109,7 @@ object ServerResponse {
     // TODO: note, a bit duped here from the client side
     case class NonExtensibleBodyStructure(list: ImapToken.List) extends FetchDataItem
     case class Body(
-      section: Seq[Imap.BodyPart],
+      part: Imap.BodyPart,
       contents: String,
       originOctet: Option[Int] = None
     ) extends FetchDataItem
@@ -129,4 +129,5 @@ object ServerResponse {
   
   case class Continuation(text: Option[String] = None) extends ServerResponse
   case object CloseConnection extends ServerResponse
+  case object StartTls extends ServerResponse
 }

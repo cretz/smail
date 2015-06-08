@@ -19,6 +19,11 @@ class ImapTokenParserSpec extends SpecificationWithJUnit {
       parser.Tokens.run() must beSuccessfulTry.withValue(
         Seq(Str("A3"), Str("FETCH"), Str("1"), List('(', Seq(Str("BODY"), List('[', Seq.empty), Str("<0.16384>"))))
       )
+    }
+    
+    "Should parse simple list request" >> {
+      val parser = new ImapTokenParser("A2 LIST \"\" \"%\"")
+      parser.Tokens.run() must beSuccessfulTry.withValue(Seq(Str("A2"), Str("LIST"), Str("", true), Str("%", true)))
       1 === 1
     }
   }

@@ -1,11 +1,9 @@
 package scimap
 
-import akka.stream.stage.StatefulStage
-import akka.stream.stage.Context
-import akka.stream.stage.SyncDirective
-
-trait ServerResponseToString {
+trait ServerResponseToString extends (ServerResponse => String) {
   import ServerResponse._
+  
+  def apply(response: ServerResponse): String = serverResponse(response)
   
   def serverResponse(response: ServerResponse): String = response match {
     case r: StatusResponse => statusResponse(r)
@@ -13,7 +11,7 @@ trait ServerResponseToString {
     case r: MailboxSizeResponse => mailboxSizeResponse(r)
     case r: MessageStatusResponse => messageStatusResponse(r)
     case Continuation(text) => "+ " + text.getOrElse("")
-    case CloseConnection => sys.error("This should be intercepted by the stage")
+    case CloseConnection | StartTls => sys.error("This should be intercepted by the stage")
   }
   
   def messageStatusResponse(resp: MessageStatusResponse): String = resp match {
@@ -25,9 +23,8 @@ trait ServerResponseToString {
     import FetchDataItem._
     item match {
       case NonExtensibleBodyStructure(list) => "BODY " + imapToken(list)
-      case Body(section, contents, origin) =>
-        "BODY[" + section.map(bodyPart).mkString(".") + "]" +
-          origin.map("<" + _ + ">").getOrElse("") + " " + literalString(contents)
+      case Body(part, contents, origin) =>
+        "BODY[" + bodyPart(part) + "]" + origin.map("<" + _ + ">").getOrElse("") + " " + literalString(contents)
       case BodyStructure(list) => "BODYSTRUCTURE " + imapToken(list)
       case Envelope(list) => "ENVELOPE " + imapToken(list)
       case Flags(flags) => "FLAGS (" + flags.mkString(" ") + ")"
@@ -56,12 +53,12 @@ trait ServerResponseToString {
   def bodyPart(part: Imap.BodyPart): String = {
     import Imap.BodyPart._
     part match {
-      case Number(int) => int.toString
-      case Header => "HEADER"
-      case HeaderFields(fields) => "HEADER.FIELDS (" + fields.mkString(" ") + ')'
-      case HeaderFieldsNot(fields) => "HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')'
-      case Mime => "MIME"
-      case Text => "TEXT"
+      case Part(nums) => nums.mkString(".")
+      case Header(nums) => nums.mkString("", ".", ".HEADER")
+      case HeaderFields(nums, fields) => nums.mkString("", ".", ".HEADER.FIELDS (" + fields.mkString(" ") + ')')
+      case HeaderFieldsNot(nums, fields) => nums.mkString("", ".", ".HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')')
+      case Mime(nums) => nums.mkString("", ".", ".MIME")
+      case Text(nums) => nums.mkString("", ".", ".TEXT")
     }
   }
   
@@ -128,7 +125,7 @@ trait ServerResponseToString {
   }
   
   def safeString(string: String): String = {
-    // Only if the string contains a slash or a double quote do we want to double quote it
+    // Only if the string contains a slash, double quote, or a space do we want to double quote it
     val result = string.replace("\\", "\\\\").replace("\"","\\\"")
     if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
     else '"' + result + '"'
@@ -136,12 +133,5 @@ trait ServerResponseToString {
 }
 
 object ServerResponseToString {
-  class Stage extends StatefulStage[ServerResponse, String] with ServerResponseToString {
-    override def initial = new State {
-      override def onPush(chunk: ServerResponse, ctx: Context[String]): SyncDirective = {
-        if (chunk == ServerResponse.CloseConnection) ctx.finish()
-        else emit(Iterator.single(serverResponse(chunk)), ctx)
-      }
-    }
-  }
+  def apply(): ServerResponseToString = new ServerResponseToString() { }
 }

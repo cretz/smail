@@ -13,6 +13,7 @@ class InMemoryServer extends HighLevelServer {
   var users = Map.empty[String, InMemoryUser]
   var currentUser = Option.empty[InMemoryUser]
   var currentMailbox = Option.empty[InMemoryMailbox]
+  var currentMailboxReadOnly = false
   
   def authenticatePlain(username: String, password: String): Boolean =
     users.get(username) match {
@@ -20,9 +21,10 @@ class InMemoryServer extends HighLevelServer {
       case _ => false
     }
   
-  def examine(mailbox: String): Option[Mailbox] =
+  def select(mailbox: String, readOnly: Boolean): Option[Mailbox] =
     currentUser.flatMap(_.mailboxes.get(mailbox)).map { ret =>
       currentMailbox = Some(ret)
+      currentMailboxReadOnly = readOnly
       ret
     }
   
@@ -94,49 +96,36 @@ object InMemoryServer {
     
     def envelope: Imap.Envelope = {
       Imap.Envelope(
-        date = headers(MailHeaders.OrigDate),
+        date = headers(MailHeaders.Date),
         subject = headers(MailHeaders.Subject),
         from = headers(MailHeaders.From).getOrElse(Seq.empty),
         sender = headers(MailHeaders.Sender).toSeq,
         replyTo = headers(MailHeaders.From).getOrElse(Seq.empty),
-        to = headers(MailHeaders.From).getOrElse(Seq.empty),
-        cc = headers(MailHeaders.From).getOrElse(Seq.empty),
-        bcc = headers(MailHeaders.From).getOrElse(Seq.empty),
-        inReplyTo = headers(MailHeaders.InReplyTo),
+        to = headers(MailHeaders.To).getOrElse(Seq.empty),
+        cc = headers(MailHeaders.Cc).getOrElse(Seq.empty),
+        bcc = headers(MailHeaders.Bcc).getOrElse(Seq.empty),
+        inReplyTo = headers(MailHeaders.InReplyTo).getOrElse(Seq.empty),
         messageId = headers(MailHeaders.MessageId)
       )
     }
     
-    def internalDate: ZonedDateTime = headers(MailHeaders.OrigDate).getOrElse(sys.error("Can't find date"))
+    def internalDate: ZonedDateTime = headers(MailHeaders.Date).getOrElse(sys.error("Can't find date"))
     // TODO: confirm whether this is just body or not
     def size: BigInt = body.length
     
-    def getBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String] = {
-      val result = peekBody(part, offset, count)
-      flags += Imap.Flag.Seen
-      result
+    def markSeen(): Unit = flags += Imap.Flag.Seen
+    def getPart(part: Seq[Int]): Option[String] = ???
+    def getHeader(part: Seq[Int], name: String): Seq[String] =
+      if (!part.isEmpty) ???
+      else MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_))
+    def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Seq[String] = {
+      val not = notIncluding.flatMap(MailHeaders.typeFromString(_).toSeq)
+      headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq
     }
-    
-    def peekBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String] = {
-      // TODO: provide a way to give errors here
-      val possibleStr = part match {
-        case Seq() => peekBody(Seq(Imap.BodyPart.Header), offset.map(_ => 0), count).flatMap(h =>
-          peekBody(Seq(Imap.BodyPart.Text), offset.map(_ => 0), count).map(h + "\r\n\r\n" + _)
-        )
-        case Seq(Imap.BodyPart.Header) => Some(
-          headers.headers().map(h => h._1 + ": " + h._2).mkString("\r\n")
-        )
-        case Seq(Imap.BodyPart.Text) => Some(body)
-        case _ => None
-      }
-      val str = possibleStr.getOrElse(return None)
-      offset -> count match {
-        case (None, _) => Some(str)
-        case (Some(offset), None) => None
-        case (Some(offset), _) if offset > str.length => None
-        case (Some(offset), Some(count)) if count > str.length => Some(str.substring(offset))
-        case (Some(offset), Some(count)) => Some(str.substring(offset, count))
-      }
-    }
+    def getMime(part: Seq[Int]): Option[String] = ???
+    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Option[String] =
+      if (!part.isEmpty) ???
+      else if (offset.isEmpty) Some(body)
+      else Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
   }
 }

@@ -15,7 +15,7 @@ trait HighLevelServer {
   )
   
   def authenticatePlain(username: String, password: String): Boolean
-  def examine(mailbox: String): Option[Mailbox]
+  def select(mailbox: String, readOnly: Boolean): Option[Mailbox]
   def flushCurrentMailboxDeleted(): Unit
   def closeCurrentMailbox(): Unit
   def close(): Unit
@@ -40,7 +40,12 @@ object HighLevelServer {
     def flags: Set[Imap.Flag]
     def internalDate: ZonedDateTime
     def size: BigInt
-    def getBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String]
-    def peekBody(part: Seq[Imap.BodyPart], offset: Option[Int], count: Option[Int]): Option[String]
+
+    def markSeen(): Unit
+    def getPart(part: Seq[Int]): Option[String]
+    def getHeader(part: Seq[Int], name: String): Seq[String]
+    def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Seq[String]
+    def getMime(part: Seq[Int]): Option[String]
+    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Option[String]
   }
 }
