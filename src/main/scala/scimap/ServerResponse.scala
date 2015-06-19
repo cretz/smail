@@ -63,29 +63,14 @@ object ServerResponse {
   
   case class List(
     name: String,
-    delimiter: Option[Char],
-    nameAttributes: Seq[ListNameAttribute]
+    delimiter: Option[String],
+    nameAttributes: Seq[Imap.ListAttribute]
   ) extends MailboxStatusResponse
-  sealed trait ListNameAttribute
-  object ListNameAttribute {
-    case object NoInferiors extends ListNameAttribute {
-      override def toString = "\\Noinferiors"
-    }
-    case object NoSelect extends ListNameAttribute {
-      override def toString = "\\Noselect"
-    }
-    case object Marked extends ListNameAttribute {
-      override def toString = "\\Marked"
-    }
-    case object Unmarked extends ListNameAttribute {
-      override def toString = "\\Unmarked"
-    }
-  }
   
   case class LSub(
     name: String,
-    delimiter: Option[Char],
-    nameAttributes: Seq[ListNameAttribute]
+    delimiter: Option[String],
+    nameAttributes: Seq[Imap.ListAttribute]
   ) extends MailboxStatusResponse
   case class Status(name: String, info: Seq[(Imap.StatusDataItem, BigInt)]) extends MailboxStatusResponse
   case class Search(numbers: Seq[BigInt]) extends MailboxStatusResponse

@@ -16,12 +16,22 @@ trait HighLevelServer {
   
   def authenticatePlain(username: String, password: String): Boolean
   def select(mailbox: String, readOnly: Boolean): Option[Mailbox]
+  
+  def hierarchyDelimiter: Option[String] = Some("/")
+  def hierarchyRoots: Seq[String] = Seq("/", "~")
+  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Seq[ListItem]
+  
   def flushCurrentMailboxDeleted(): Unit
   def closeCurrentMailbox(): Unit
   def close(): Unit
 }
 object HighLevelServer {
-  trait Mailbox {
+  trait Folder {
+    def name: String
+    def children: Seq[Folder]
+  }
+  
+  trait Mailbox extends Folder {
     def exists: BigInt
     def recent: BigInt
     def firstUnseen: BigInt
@@ -48,4 +58,6 @@ object HighLevelServer {
     def getMime(part: Seq[Int]): Option[String]
     def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Option[String]
   }
+  
+  case class ListItem(path: String, attrs: Seq[Imap.ListAttribute])
 }

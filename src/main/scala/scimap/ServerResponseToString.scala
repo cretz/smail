@@ -125,6 +125,8 @@ trait ServerResponseToString extends (ServerResponse => String) {
   }
   
   def safeString(string: String): String = {
+    // Empty strings are just double quotes
+    if (string.isEmpty) return "\"\""
     // Only if the string contains a slash, double quote, or a space do we want to double quote it
     val result = string.replace("\\", "\\\\").replace("\"","\\\"")
     if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result

@@ -101,7 +101,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       password = "bar",
       mailboxes = Map(
         "INBOX" -> new InMemoryMailbox(
-          name = "INBOX",
+          "INBOX",
           flags = Set(Imap.Flag.Answered),
           permanentFlags = Set.empty,
           messages = for (uid <- 1 to 30) yield newMessage(uid)

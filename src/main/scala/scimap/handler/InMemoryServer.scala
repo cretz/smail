@@ -28,6 +28,19 @@ class InMemoryServer extends HighLevelServer {
       ret
     }
   
+  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Seq[ListItem] = {
+    // TODO: do we start at the current mailbox?
+//    println("Asking for", tokens)
+//    var currentMailboxes =
+//      if (startsAtRoot) Map.empty[String, Mailbox]
+//      else Map("/")
+//    // Go over each token, updating the list of mailboxes
+//    tokens.zipWithIndex.foreach { case (token, index) =>
+//      token match
+//    }
+    ???
+  }
+  
   def flushCurrentMailboxDeleted(): Unit = currentMailbox.foreach(_.flushDeleted())
   
   def closeCurrentMailbox(): Unit = currentMailbox = None
@@ -43,13 +56,19 @@ object InMemoryServer {
     @volatile var mailboxes: Map[String, InMemoryMailbox]
   )
   
-  class InMemoryMailbox(
+  class InMemoryFolder(
     @volatile var name: String,
+    @volatile var children: Seq[InMemoryFolder] = Seq.empty
+  ) extends Folder
+  
+  class InMemoryMailbox(
+    private var nameParam: String,
     @volatile var messages: Seq[InMemoryMessage],
     @volatile var flags: Set[Imap.Flag],
     @volatile var permanentFlags: Set[Imap.Flag],
-    @volatile var uidValidity: BigInt = System.currentTimeMillis
-  ) extends Mailbox {
+    @volatile var uidValidity: BigInt = System.currentTimeMillis,
+    private var childrenParam: Seq[InMemoryFolder] = Seq.empty
+  ) extends InMemoryFolder(nameParam, childrenParam) with Mailbox {
     def exists = messages.size
     def recent = messages.count(_.flags.contains(Imap.Flag.Recent))
     def firstUnseen = messages.find(!_.flags.contains(Imap.Flag.Seen)).map(_.uid).getOrElse(0)

@@ -42,7 +42,6 @@ object ClientCommand {
   ) extends ClientCommand with AuthenticatedState
   case class Subscribe(tag: String, mailbox: String) extends ClientCommand with AuthenticatedState
   case class Unsubscribe(tag: String, mailbox: String) extends ClientCommand with AuthenticatedState
-  // TODO: get the wildcards right
   case class List(tag: String, reference: String, mailbox: String) extends ClientCommand with AuthenticatedState
   case class LSub(tag: String, reference: String, mailbox: String) extends ClientCommand with AuthenticatedState
   

@@ -3,6 +3,8 @@ package handler
 
 import scala.collection.immutable.NumericRange
 import scala.collection.immutable.TreeSet
+import java.util.regex.Pattern
+import scala.annotation.tailrec
 
 class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
   import HighLevelServerHandler._
@@ -40,6 +42,8 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
         handleSelectOrExamine(tag, mailbox, true)
       case (_, Some(cli.CommandSuccess(cli.Noop(tag)))) =>
         handleNoop(tag)
+      case (_, Some(cli.CommandSuccess(cli.List(tag, reference, mailbox)))) =>
+        handleList(tag, reference, mailbox)
       case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
         handleFetch(fetch)
       case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
@@ -136,6 +140,43 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       // TODO: EXPUNGE and FETCH
     }
     responses :+ ser.Ok("NOOP completed", Some(tag))
+  }
+  
+  def listStringToTokens(str: String): Seq[Imap.ListToken] = {
+    // Get first wildcard path
+    val (wildcard, index) = str.indexOf('%') -> str.indexOf('*') match {
+      case (-1, -1) => return Seq(Imap.ListToken.Str(str))
+      case (-1, b) => Imap.ListToken.PathWildcard -> b
+      case (a, -1) => Imap.ListToken.NameWildcard -> a
+      case (a, b) if a < b => Imap.ListToken.NameWildcard -> a
+      case (a, b) => Imap.ListToken.PathWildcard -> b
+    }
+    // Split it up recursively
+    str.splitAt(index) match {
+      case ("", rhs) if rhs.length == 1 => Seq(wildcard)
+      case (lhs, rhs) if rhs.length == 1 => Seq(Imap.ListToken.Str(lhs), wildcard)
+      case ("", rhs) => wildcard +: listStringToTokens(rhs.tail)
+      case (lhs, rhs) => Seq(Imap.ListToken.Str(lhs), wildcard) ++ listStringToTokens(rhs.tail)
+    }
+  }
+  
+  def handleList(tag: String, reference: String, mailbox: String): Seq[ser] = {
+    val delim = server.hierarchyDelimiter
+    // If the mailbox is empty, all we need is the delimiter
+    if (mailbox.isEmpty)
+      return Seq(ser.List("", delim, Seq(Imap.ListAttribute.NoSelect)), ser.Ok("LIST Completed", Some(tag)))
+    // Break apart the pieces
+    val startsAtRoot = server.hierarchyRoots.exists(s => reference.startsWith(s) || mailbox.startsWith(s))
+    val combined = if (server.hierarchyRoots.exists(mailbox.startsWith)) mailbox else reference + mailbox
+    val pieces = delim match {
+      case Some(delim) => combined.split(Pattern.quote(delim)).toSeq
+      case None => Seq(combined)
+    }
+    // Go over each and create token sets
+    val tokenSets = pieces.map(listStringToTokens)
+    // Ask server for the list
+    server.list(tokenSets, startsAtRoot).
+      map(i => ser.List(i.path, delim, i.attrs)) :+ ser.Ok("LIST Completed", Some(tag))
   }
   
   def handleFetch(fetch: cli.Fetch): Seq[ser] = {

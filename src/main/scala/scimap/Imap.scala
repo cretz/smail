@@ -186,4 +186,27 @@ object Imap {
   ) extends MailAddress {
     override def toString: String = MailAddress.safeString(displayName) + mailboxes.mkString(":", ",", ";")
   }
+  
+  sealed trait ListToken
+  object ListToken {
+    case class Str(str: String) extends ListToken
+    case object Delimiter extends ListToken
+    case object NameWildcard extends ListToken
+    case object PathWildcard extends ListToken
+  }
+  sealed trait ListAttribute
+  object ListAttribute {
+    case object NoInferiors extends ListAttribute {
+      override def toString = "\\Noinferiors"
+    }
+    case object NoSelect extends ListAttribute {
+      override def toString = "\\Noselect"
+    }
+    case object Marked extends ListAttribute {
+      override def toString = "\\Marked"
+    }
+    case object Unmarked extends ListAttribute {
+      override def toString = "\\Unmarked"
+    }
+  }
 }
