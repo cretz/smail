@@ -5,11 +5,11 @@ import org.specs2.execute.AsResult
 import org.specs2.execute.Result
 import org.specs2.specification.ForEach
 import akka.actor.ActorSystem
-import akka.stream.FlowMaterializer
-import akka.stream.ActorFlowMaterializer
+import akka.stream.Materializer
+import akka.stream.ActorMaterializer
 import javax.mail.Session
 import java.util.Properties
-import akka.stream.ActorFlowMaterializerSettings
+import akka.stream.ActorMaterializerSettings
 import scimap.handler.InMemoryServer
 import scimap.handler.HighLevelServerHandler
 import javax.net.ssl.SSLContext
@@ -32,9 +32,10 @@ trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
 object JavaMailMemoryServer {  
   class Context(val server: InMemoryServer = new InMemoryServer()) {
     implicit val system = ActorSystem("scimap-server")
-    implicit val materializer = ActorFlowMaterializer(
-      ActorFlowMaterializerSettings(system).withDebugLogging(true)
+    implicit val materializer = ActorMaterializer(
+      ActorMaterializerSettings(system).withDebugLogging(true)
     )
+    import system.dispatcher
     
     var daemon = ServerDaemon("127.0.0.1", 143, () => new HighLevelServerHandler(server), true, None, None)
     

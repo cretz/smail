@@ -20,6 +20,8 @@ import akka.stream.BidiShape
 import akka.stream.io.SslTls
 import akka.stream.io.Server
 import akka.stream.io.SslTlsPlacebo
+import scala.collection.immutable
+import akka.stream.scaladsl.Source
 
 case class FlowBuilder(
   debug: Boolean,
@@ -41,6 +43,13 @@ case class FlowBuilder(
       map(_.decodeString("US-ASCII")).withDebug("Client String").
       mapConcat(StringToTokenSet()(_).toStream).withDebug("Client Tokens").
       map(TokenSetToClientCommand()).withDebug("Client Cmd")
+      
+  def serverResponseToByteString(): Flow[ServerResponse, ByteString, Unit] =
+    Flow[ServerResponse].
+      map(ServerResponseToString).
+      withDebug("Server Cmd").
+      map(s => ByteString(s + "\r\n", "US-ASCII"))
+      
   
   def tlsInboundToClientParseResult(): Flow[SslTlsInbound, ClientCommand.ParseResult, Unit] =
     Flow[SslTlsInbound].map({
@@ -50,9 +59,8 @@ case class FlowBuilder(
  
   def serverResponseToTlsOutbound(): Flow[ServerResponse, SslTlsOutbound, Unit] = Flow[ServerResponse].transform {() =>
     new StatefulStage[ServerResponse, SslTlsOutbound] {
-      val serverResponseToString = ServerResponseToString()
       def serverResponseToStringDebug(resp: ServerResponse): String = {
-        val str = serverResponseToString(resp)
+        val str = ServerResponseToString(resp)
         println(s"Server String: $str")
         str
       }
@@ -69,17 +77,36 @@ case class FlowBuilder(
     }
   }
   
-  def clientParseResultToServer(handler: () => ServerHandler): Flow[ClientCommand.ParseResult, ServerResponse, Unit] =
-    Flow[ClientCommand.ParseResult].transform(() => new ServerHandlerStage(handler())).withDebug("Server Cmd")
+  def clientParseResultToServer(mkHandler: () => ServerHandler, parallelism: Int = 3):
+      Flow[ClientCommand.ParseResult, ServerResponse, Unit] = {
+    Flow[ClientCommand.ParseResult].
+      transform(() => new ServerHandlerStage(mkHandler())).
+      mapAsync(parallelism)(identity).
+      mapConcat(immutable.Iterable(_:_*)).
+      withDebug("Server Cmd").
+      transform(() => new CloseConnectionStage)
+  }
   
   def byteStringToByteString(handler: () => ServerHandler): Flow[ByteString, ByteString, Unit] = {
+//    val switchableTls = BidiFlow() { b =>
+//      val in = Flow[ByteString]
+//      in ~> inBcast ~> tlsInbound    ~> inMerge ~> handler ~> outBcast
+//            inBcast ~> nonTlsInbound ~> inMerge
+//      outBcast ~> tlsOutbound    ~> outMerge ~> out
+//      outBcast ~> nonTlsOutbound ~> outMerge
+//    }
+    
     val bidiFlow = BidiFlow() { b =>
-      val outbound = b.add(serverResponseToTlsOutbound().withDebug("Outbound"))
       val inbound = b.add(tlsInboundToClientParseResult().withDebug("Inbound"))
+      val outbound = b.add(serverResponseToTlsOutbound().withDebug("Outbound"))
       BidiShape(outbound, inbound)
     }
     val tlsHandler = sslContext.map(SslTls(_, negotiation, Server)).getOrElse(SslTlsPlacebo.forScala)
     // TODO: is reversed ok here?
+    val a = bidiFlow.atop(tlsHandler).reversed
     bidiFlow.atop(tlsHandler).reversed.join(clientParseResultToServer(handler))
+//    byteStringToClientParseResult().
+//      via(clientParseResultToServer(handler)).
+//      via(serverResponseToByteString())
   }
 }

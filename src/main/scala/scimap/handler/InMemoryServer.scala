@@ -3,6 +3,7 @@ package handler
 
 import java.time.ZonedDateTime
 import scimap.Imap.BodyStructureSingleExtension
+import scala.concurrent.Future
 
 // Basically only for testing
 class InMemoryServer extends HighLevelServer {
@@ -15,20 +16,23 @@ class InMemoryServer extends HighLevelServer {
   var currentMailbox = Option.empty[InMemoryMailbox]
   var currentMailboxReadOnly = false
   
-  def authenticatePlain(username: String, password: String): Boolean =
+  def authenticatePlain(username: String, password: String): Future[Boolean] =
     users.get(username) match {
-      case Some(user) if user.password == password => currentUser = Some(user); true
-      case _ => false
+      case Some(user) if user.password == password =>
+        currentUser = Some(user)
+        Future.successful(true)
+      case _ =>
+        Future.successful(false)
     }
   
-  def select(mailbox: String, readOnly: Boolean): Option[Mailbox] =
-    currentUser.flatMap(_.mailboxes.get(mailbox)).map { ret =>
+  def select(mailbox: String, readOnly: Boolean): Future[Option[Mailbox]] =
+    Future.successful(currentUser.flatMap(_.mailboxes.get(mailbox)).map { ret =>
       currentMailbox = Some(ret)
       currentMailboxReadOnly = readOnly
       ret
-    }
+    })
   
-  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Seq[ListItem] = {
+  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Future[Seq[ListItem]] = {
     // TODO: do we start at the current mailbox?
 //    println("Asking for", tokens)
 //    var currentMailboxes =
@@ -41,11 +45,11 @@ class InMemoryServer extends HighLevelServer {
     ???
   }
   
-  def flushCurrentMailboxDeleted(): Unit = currentMailbox.foreach(_.flushDeleted())
+  def flushCurrentMailboxDeleted(): Future[Unit] = Future.successful(currentMailbox.foreach(_.flushDeleted()))
   
-  def closeCurrentMailbox(): Unit = currentMailbox = None
+  def closeCurrentMailbox(): Future[Unit] = Future.successful(currentMailbox = None)
   
-  def close(): Unit = { }
+  def close(): Future[Unit] = Future.successful(())
 }
 object InMemoryServer {
   import HighLevelServer._
@@ -58,8 +62,10 @@ object InMemoryServer {
   
   class InMemoryFolder(
     @volatile var name: String,
-    @volatile var children: Seq[InMemoryFolder] = Seq.empty
-  ) extends Folder
+    @volatile var _children: Seq[InMemoryFolder] = Seq.empty
+  ) extends Folder {
+    override def children(): Future[Seq[Folder]] = Future.successful(_children)
+  }
   
   class InMemoryMailbox(
     private var nameParam: String,
@@ -74,13 +80,12 @@ object InMemoryServer {
     def firstUnseen = messages.find(!_.flags.contains(Imap.Flag.Seen)).map(_.uid).getOrElse(0)
     def nextUid = messages.foldLeft(BigInt(0)){ case (max, msg) => max.max(msg.uid) } + 1
     
-    def getMessages(start: BigInt, end: BigInt): Option[Seq[Message]] = {
-      println("Getting from ", start, end)
+    def getMessages(start: BigInt, end: BigInt): Future[Option[Seq[Message]]] = {
       val lifted = messages.lift
       val msgs = for (i <- start to end) yield {
-        lifted(i.toInt - 1).getOrElse(return None)
+        lifted(i.toInt - 1).getOrElse(return Future.successful(None))
       }
-      Some(msgs)
+      Future.successful(Some(msgs))
     }
     
     def flushDeleted(): Unit = messages = messages.filterNot(_.flags.contains(Imap.Flag.Deleted))
@@ -132,19 +137,21 @@ object InMemoryServer {
     // TODO: confirm whether this is just body or not
     def size: BigInt = body.length
     
-    def markSeen(): Unit = flags += Imap.Flag.Seen
-    def getPart(part: Seq[Int]): Option[String] = ???
-    def getHeader(part: Seq[Int], name: String): Seq[String] =
+    def markSeen(): Future[Unit] = Future.successful(flags += Imap.Flag.Seen)
+    def getPart(part: Seq[Int]): Future[Option[String]] = ???
+    def getHeader(part: Seq[Int], name: String): Future[Seq[String]] =
       if (!part.isEmpty) ???
-      else MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_))
-    def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Seq[String] = {
+      else Future.successful(MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_)))
+    def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Future[Seq[String]] = {
       val not = notIncluding.flatMap(MailHeaders.typeFromString(_).toSeq)
-      headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq
+      Future.successful(headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq)
     }
-    def getMime(part: Seq[Int]): Option[String] = ???
-    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Option[String] =
+    def getMime(part: Seq[Int]): Future[Option[String]] = ???
+    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Future[Option[String]] =
       if (!part.isEmpty) ???
-      else if (offset.isEmpty) Some(body)
-      else Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
+      else if (offset.isEmpty) Future.successful(Some(body))
+      else Future.successful(
+        Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
+      )
   }
 }

@@ -134,6 +134,6 @@ trait ServerResponseToString extends (ServerResponse => String) {
   }
 }
 
-object ServerResponseToString {
-  def apply(): ServerResponseToString = new ServerResponseToString() { }
+object ServerResponseToString extends ServerResponseToString {
+//  def apply(): ServerResponseToString = new ServerResponseToString() { }
 }

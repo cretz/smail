@@ -5,17 +5,26 @@ import scala.collection.immutable.NumericRange
 import scala.collection.immutable.TreeSet
 import java.util.regex.Pattern
 import scala.annotation.tailrec
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext
 
-class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
+class HighLevelServerHandler(val server: HighLevelServer)
+    (implicit val execCtx: ExecutionContext) extends ServerHandler {
   import HighLevelServerHandler._
   import HighLevelServer._
   import scimap.{ServerResponse => ser, ClientCommand => cli}
   
-  var state = State.Started
-  var pendingAuthentication = Option.empty[cli.Authenticate]
+  // We accept the cheapness of volatile since state change in IMAP is not really racy anyways
+  @volatile var state = State.Started
+  @volatile var pendingAuthentication = Option.empty[cli.Authenticate]
+  
+  override def handle(res: Option[cli.ParseResult]): Option[Future[Seq[ser]]] = {
+    if (state != State.Started && res.isEmpty) return None
+    else return Some(handleOption(res))
+  }
   
   // TODO: lots of cleanup needed here
-  override def handle(res: Option[cli.ParseResult]): Seq[ser] = {
+  def handleOption(res: Option[cli.ParseResult]): Future[Seq[ser]] = {
     (state, res) match {
       case (State.Started, None) =>
         handleFirstConnect()
@@ -23,15 +32,16 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
         failAndClose("Client sent first command")
       case (_, None) =>
         // This means that no command was parsed...TODO: handle server-initiated update
-        Seq.empty
+        Future.successful(Seq.empty)
       case (_, Some(cli.CommandSuccess(cli.Logout(tag)))) =>
         handleLogout(tag)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(auth: cli.Authenticate))) =>
+        println("AUTH, YAY!")
         requestAuthentication(auth)
       case (State.NotAuthenticated, Some(cli.UnrecognizedCommand(seq))) if pendingAuthentication.isDefined =>
         handlePendingAuthentication(seq)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(cli.StartTls(tag)))) =>
-        Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls)
+        Future.successful(Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls))
       case (State.NotAuthenticated, _) =>
         failAndClose("Not authenticated")
       case (_, Some(cli.CommandSuccess(cli.Capability(tag)))) =>
@@ -49,66 +59,72 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
         handleClose(tag)
       case v =>
-        sys.error("Unknown state/command: " + v)
+        failAndClose("Unknown state/command: " + v)
     }
   }
   
-  def handleFirstConnect(): Seq[ser] = {
+  def handleFirstConnect(): Future[Seq[ser]] = {
       // Call this before state change so implementers can know if this was in response to a request or not
-      val caps = server.capabilities()
-      state = State.NotAuthenticated
-      Seq(ser.Ok("Service ready", None, Some(ser.StatusResponseCode.Capability(caps))))
+      server.capabilities().map { caps =>
+        state = State.NotAuthenticated
+        Seq(ser.Ok("Service ready", None, Some(ser.StatusResponseCode.Capability(caps))))
+      }
   }
   
-  def handleLogout(tag: String): Seq[ser] = {
-    server.close()
-    state = State.Logout
-    Seq(ser.Bye("Server logging out"), ser.Ok("LOGOUT completed", Some(tag)), ser.CloseConnection)
+  def handleLogout(tag: String): Future[Seq[ser]] = {
+    server.close().map { _ =>
+      state = State.Logout
+      Seq(ser.Bye("Server logging out"), ser.Ok("LOGOUT completed", Some(tag)), ser.CloseConnection)
+    }
   }
   
-  def handleCapabilities(tag: String): Seq[ser] = {
-    Seq(ser.Capability(server.capabilities()), ser.Ok("Complete", Some(tag)))
+  def handleCapabilities(tag: String): Future[Seq[ser]] = {
+    server.capabilities().map { caps =>
+      Seq(ser.Capability(caps), ser.Ok("Complete", Some(tag)))
+    }
   }
   
-  def requestAuthentication(auth: cli.Authenticate): Seq[ser] = {
+  def requestAuthentication(auth: cli.Authenticate): Future[Seq[ser]] = {
     if (pendingAuthentication.isDefined) failAndClose("Authentication already pending")
     else if (auth.mechanism != "PLAIN")
-      Seq(ser.No("Only PLAIN accepted", Some(pendingAuthentication.get.tag)))
+      Future.successful(Seq(ser.No("Only PLAIN accepted", Some(pendingAuthentication.get.tag))))
     else {
       pendingAuthentication = Some(auth)
-      Seq(ser.Continuation())
+      Future.successful(Seq(ser.Continuation()))
     }
   }
   
-  def handlePendingAuthentication(tokens: Seq[ImapToken]): Seq[ser] = {
+  def handlePendingAuthentication(tokens: Seq[ImapToken]): Future[Seq[ser]] = {
     if (!pendingAuthentication.isDefined || pendingAuthentication.get.mechanism != "PLAIN")
-      return Seq(ser.No("Only PLAIN accepted"))
+      return Future.successful(Seq(ser.No("Only PLAIN accepted")))
     val tag = pendingAuthentication.get.tag
     pendingAuthentication = None
     tokens match {
       case Seq(ImapToken.Str(userPass, _)) =>
         // Per RFC-2595, this is a base 64'd string of the null char + UTF-8 user/pass separated by a null char
         val bytes = Util.base64Decode(userPass)
-        if (bytes.headOption != Some(0)) Seq(ser.Bad("Unable to read credentials", Some(tag)))
+        if (bytes.headOption != Some(0)) Future.successful(Seq(ser.Bad("Unable to read credentials", Some(tag))))
         else bytes.tail.indexOf(0) match {
-          case -1 => Seq(ser.Bad("Unable to read credentials", Some(tag)))
+          case -1 => Future.successful(Seq(ser.Bad("Unable to read credentials", Some(tag))))
           case idx => bytes.tail.splitAt(idx) match {
             case (usernameBytes, passwordBytes) =>
               val username = new String(usernameBytes, "UTF-8")
-              if (server.authenticatePlain(username, new String(passwordBytes.tail, "UTF-8"))) {
-                state = State.Authenticated
-                Seq(ser.Ok("Login successful", Some(tag)))
-              } else Seq(ser.No("Login failed", Some(tag)))
+              server.authenticatePlain(username, new String(passwordBytes.tail, "UTF-8")).map { success =>
+                if (success) {
+                  state = State.Authenticated
+                  Seq(ser.Ok("Login successful", Some(tag)))
+                } else Seq(ser.No("Login failed", Some(tag)))
+              }
             case arr =>
-              Seq(ser.Bad("Unable to read credentials", Some(tag)))
+              Future.successful(Seq(ser.Bad("Unable to read credentials", Some(tag))))
           }
         }
-      case _ => Seq(ser.Bad("Unable to read credentials", Some(tag)))
+      case _ => Future.successful(Seq(ser.Bad("Unable to read credentials", Some(tag))))
     }
   }
   
-  def handleSelectOrExamine(tag: String, mailbox: String, isSelect: Boolean): Seq[ser] = {
-    server.select(mailbox, !isSelect) match {
+  def handleSelectOrExamine(tag: String, mailbox: String, isSelect: Boolean): Future[Seq[ser]] = {
+    server.select(mailbox, !isSelect).map {
       case None => Seq(ser.No("Mailbox not found", Some(tag)))
       case Some(result) =>
         state = State.Selected
@@ -132,14 +148,14 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     }
   }
   
-  def handleNoop(tag: String): Seq[ser] = {
+  def handleNoop(tag: String): Future[Seq[ser]] = {
     var responses = Seq.empty[ser]
     server.currentMailbox.foreach { res =>
       responses :+= ser.Exists(res.exists)
       responses :+= ser.Recent(res.recent)
       // TODO: EXPUNGE and FETCH
     }
-    responses :+ ser.Ok("NOOP completed", Some(tag))
+    Future.successful(responses :+ ser.Ok("NOOP completed", Some(tag)))
   }
   
   def listStringToTokens(str: String): Seq[Imap.ListToken] = {
@@ -160,11 +176,12 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     }
   }
   
-  def handleList(tag: String, reference: String, mailbox: String): Seq[ser] = {
+  def handleList(tag: String, reference: String, mailbox: String): Future[Seq[ser]] = {
     val delim = server.hierarchyDelimiter
     // If the mailbox is empty, all we need is the delimiter
-    if (mailbox.isEmpty)
-      return Seq(ser.List("", delim, Seq(Imap.ListAttribute.NoSelect)), ser.Ok("LIST Completed", Some(tag)))
+    if (mailbox.isEmpty) return Future.successful(
+      Seq(ser.List("", delim, Seq(Imap.ListAttribute.NoSelect)), ser.Ok("LIST Completed", Some(tag)))
+    )
     // Break apart the pieces
     val startsAtRoot = server.hierarchyRoots.exists(s => reference.startsWith(s) || mailbox.startsWith(s))
     val combined = if (server.hierarchyRoots.exists(mailbox.startsWith)) mailbox else reference + mailbox
@@ -175,31 +192,20 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     // Go over each and create token sets
     val tokenSets = pieces.map(listStringToTokens)
     // Ask server for the list
-    server.list(tokenSets, startsAtRoot).
-      map(i => ser.List(i.path, delim, i.attrs)) :+ ser.Ok("LIST Completed", Some(tag))
+    server.list(tokenSets, startsAtRoot).map { list =>
+      list.map(i => ser.List(i.path, delim, i.attrs)) :+ ser.Ok("LIST Completed", Some(tag))
+    }
   }
   
-  def handleFetch(fetch: cli.Fetch): Seq[ser] = {
-    val mailbox = server.currentMailbox.getOrElse(return Seq(ser.Bad("No mailbox selected", Some(fetch.tag))))
+  def handleFetch(fetch: cli.Fetch): Future[Seq[ser]] = {
+    val mailbox = server.currentMailbox.getOrElse(
+      return Future.successful(Seq(ser.Bad("No mailbox selected", Some(fetch.tag))))
+    )
     
     // Get proper sequences to fetch
     val ranges = fetch.set.items.map {
       case num: Imap.SequenceNumber => num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
       case Imap.SequenceRange(low, high) => low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
-    }
-    
-    // Go over each range and ask for messages
-    // TODO: This needs to be streaming/lazy, not chunked
-    val msgs = Util.bigIntGaps(ranges).foldLeft(Seq.empty[(BigInt, Message)]) { case (msgs, range) =>
-      val end = range._2.getOrElse(mailbox.exists)
-      mailbox.getMessages(range._1, end) match {
-        // Any none means error
-        case None =>
-          return Seq(ser.Bad("Unable to read message", Some(fetch.tag)))
-        case Some(newMsgs) if newMsgs.size != (end - range._1 + 1).toInt =>
-          return Seq(ser.Bad("Unable to find all messages", Some(fetch.tag)))
-        case Some(newMsgs) => msgs ++ (range._1 to end).zip(newMsgs)
-      }
     }
     
     // Get the real items we are being asked for
@@ -215,41 +221,86 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
           cli.FetchDataItem.Envelope, cli.FetchDataItem.Body(Imap.BodyPart.Part(Seq.empty)))
       case Right(seq) => seq
     }
-
-    // Convert to fetch responses and add OK at the end
-    msgs.flatMap { case (seq, msg) =>
-      val fetches: Seq[ser.FetchDataItem] = items.flatMap {
-        case cli.FetchDataItem.NonExtensibleBodyStructure =>
-          Seq(ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension)))
-        case cli.FetchDataItem.Body(part, offset, count) =>
-          val res = fetchBodyPart(msg, part, offset, count).toSeq
-          msg.markSeen()
-          res
-        case cli.FetchDataItem.BodyPeek(part, offset, count) =>
-          fetchBodyPart(msg, part, offset, count).toSeq
-        case cli.FetchDataItem.BodyStructure =>
-          Seq(ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure)))
-        case cli.FetchDataItem.Envelope =>
-          Seq(ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope)))
-        case cli.FetchDataItem.Flags =>
-          Seq(ser.FetchDataItem.Flags(msg.flags.toSeq))
-        case cli.FetchDataItem.InternalDate =>
-          Seq(ser.FetchDataItem.InternalDate(msg.internalDate))
-        case cli.FetchDataItem.Rfc822 =>
-          val headers = msg.getHeaders(Seq.empty, Seq.empty)
-          val text = msg.getText(Seq.empty, None, None).getOrElse("")
-          Seq(ser.FetchDataItem.Rfc822(headers.mkString("\r\n") + s"\r\n\r\n$text"))
-        case cli.FetchDataItem.Rfc822Header =>
-          Seq(ser.FetchDataItem.Rfc822Header(msg.getHeaders(Seq.empty, Seq.empty).mkString("\r\n") + "\r\n"))
-        case cli.FetchDataItem.Rfc822Size =>
-          Seq(ser.FetchDataItem.Rfc822Size(msg.size))
-        case cli.FetchDataItem.Rfc822Text =>
-          msg.getText(Seq.empty, None, None).map(ser.FetchDataItem.Rfc822Text(_)).toSeq
-        case cli.FetchDataItem.Uid =>
-          Seq(ser.FetchDataItem.Uid(msg.uid))
+    
+    // Go over each range and ask for messages (right side of either is failure)
+    // TODO: This needs to be streaming/lazy, not chunked
+    type GetMessageResult = Either[Seq[(BigInt, Message)], String]
+    val msgFutures: Set[Future[GetMessageResult]] = Util.bigIntGaps(ranges).map { range =>
+      val end = range._2.getOrElse(mailbox.exists)
+      mailbox.getMessages(range._1, end).map {
+        // Any none means error
+        // TODO: find a way to make this short-circuit the other work
+        case None =>
+          Right("Unable to read message")
+        case Some(newMsgs) if newMsgs.size != (end - range._1 + 1).toInt =>
+          Right("Unable to find all messages")
+        case Some(newMsgs) =>
+          Left((range._1 to end).zip(newMsgs))
       }
-      if (fetches.isEmpty) Seq.empty else Seq(ser.Fetch(seq, fetches))
-    } :+ ser.Ok("FETCH completed", Some(fetch.tag))
+    }
+    
+    // Fold them all into one set (left is ok, right is bad)
+    type AllMessagesResult = Either[Future[Seq[ser]], Seq[ser]]
+    val msgs = Future.fold(msgFutures)(Left(Future.successful(Seq.empty[ser])): AllMessagesResult) {
+      // Failure (right side) means do nothing else
+      case (r @ Right(_), _) => r
+      case (_, Right(err)) => Right(Seq(ser.Bad(err, Some(fetch.tag))))
+      case (Left(futureSeq), Left(msgs)) =>
+        val thisSet = Future.sequence(msgs.map { case (seq, msg) =>
+          messageToFetchItems(msg, items).map { fetchItems =>
+            if (fetchItems.isEmpty) Seq.empty else Seq(ser.Fetch(seq, fetchItems))
+          }
+        }).map(_.flatten)
+        Left(futureSeq.flatMap(seq => thisSet.map(seq ++ _)))
+    }
+    
+    msgs.flatMap {
+      case Right(badSeq) => Future.successful(badSeq)
+      case Left(goodFutureSeqs) =>
+        goodFutureSeqs.map(_ :+ ser.Ok("FETCH completed", Some(fetch.tag)))
+    }
+  }
+  
+  def messageToFetchItems(msg: Message, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {
+    val items = itemsRequested.map {
+      case cli.FetchDataItem.NonExtensibleBodyStructure =>
+        Future.successful(
+          Seq(ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension)))
+        )
+      case cli.FetchDataItem.Body(part, offset, count) =>
+        fetchBodyPart(msg, part, offset, count).flatMap { ret =>
+          msg.markSeen().map(_ => ret.toSeq)
+        }
+      case cli.FetchDataItem.BodyPeek(part, offset, count) =>
+        fetchBodyPart(msg, part, offset, count).map(_.toSeq)
+      case cli.FetchDataItem.BodyStructure =>
+        Future.successful(Seq(ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure))))
+      case cli.FetchDataItem.Envelope =>
+        Future.successful(Seq(ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope))))
+      case cli.FetchDataItem.Flags =>
+        Future.successful(Seq(ser.FetchDataItem.Flags(msg.flags.toSeq)))
+      case cli.FetchDataItem.InternalDate =>
+        Future.successful(Seq(ser.FetchDataItem.InternalDate(msg.internalDate)))
+      case cli.FetchDataItem.Rfc822 =>
+        msg.getHeaders(Seq.empty, Seq.empty).flatMap { headers =>
+          msg.getText(Seq.empty, None, None).map { text =>
+            Seq(ser.FetchDataItem.Rfc822(headers.mkString("\r\n") + "\r\n\r\n" + text.getOrElse("")))
+          }
+        }
+      case cli.FetchDataItem.Rfc822Header =>
+        msg.getHeaders(Seq.empty, Seq.empty).map { headers =>
+          Seq(ser.FetchDataItem.Rfc822Header(headers.mkString("\r\n") + "\r\n"))
+        }
+      case cli.FetchDataItem.Rfc822Size =>
+        Future.successful(Seq(ser.FetchDataItem.Rfc822Size(msg.size)))
+      case cli.FetchDataItem.Rfc822Text =>
+        msg.getText(Seq.empty, None, None).map { text =>
+          text.map(ser.FetchDataItem.Rfc822Text(_)).toSeq
+        }
+      case cli.FetchDataItem.Uid =>
+        Future.successful(Seq(ser.FetchDataItem.Uid(msg.uid)))
+    }
+    Future.sequence(items).map(_.flatten)
   }
   
   def fetchBodyPart(
@@ -257,7 +308,7 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     part: Imap.BodyPart,
     offset: Option[Int] = None,
     count: Option[Int] = None
-  ): Option[ser.FetchDataItem.Body] = {
+  ): Future[Option[ser.FetchDataItem.Body]] = {
     @inline
     def substr(str: String) =
       if (!offset.isDefined) str
@@ -267,18 +318,29 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
       else Some(substr(lines.mkString("\r\n")) + "\r\n") // TODO: where to substr this?
     part match {
       case Imap.BodyPart.Part(nums) =>
-        msg.getPart(nums).map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+        msg.getPart(nums).map {
+          _.map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+        }
       case Imap.BodyPart.Header(nums) =>
-        headerLinesToStr(msg.getHeaders(nums, Seq.empty)).map(s => ser.FetchDataItem.Body(part, s, offset))
+        msg.getHeaders(nums, Seq.empty).map {
+          headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
+        }
       case Imap.BodyPart.HeaderFields(nums, fields) =>
-        val lines = fields.flatMap(msg.getHeader(nums, _))
-        headerLinesToStr(lines).map(s => ser.FetchDataItem.Body(part, s, offset))
+        Future.sequence(fields.map(msg.getHeader(nums, _))).map(_.flatten).map {
+          headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
+        }
       case Imap.BodyPart.HeaderFieldsNot(nums, fields) =>
-        headerLinesToStr(msg.getHeaders(nums, fields)).map(s => ser.FetchDataItem.Body(part, s, offset))
+        msg.getHeaders(nums, fields).map {
+          headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
+        }
       case Imap.BodyPart.Mime(nums) =>
-        msg.getMime(nums).map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+        msg.getMime(nums).map {
+          _.map(s => ser.FetchDataItem.Body(part, substr(s), offset))
+        }
       case Imap.BodyPart.Text(nums) =>
-        msg.getText(nums, offset, count).map(s => ser.FetchDataItem.Body(part, s, offset))
+        msg.getText(nums, offset, count).map {
+          _.map(s => ser.FetchDataItem.Body(part, s, offset))
+        }
     }
   }
 
@@ -361,11 +423,13 @@ class HighLevelServerHandler(server: HighLevelServer) extends ServerHandler {
     }
   }
   
-  def handleClose(tag: String): Seq[ser] = {
-    server.flushCurrentMailboxDeleted()
-    server.closeCurrentMailbox()
-    state = State.Authenticated
-    Seq(ser.Ok("CLOSE completed", Some(tag)))
+  def handleClose(tag: String): Future[Seq[ser]] = {
+    server.flushCurrentMailboxDeleted().flatMap { _ =>
+      server.closeCurrentMailbox().map { _ =>
+        state = State.Authenticated
+        Seq(ser.Ok("CLOSE completed", Some(tag)))
+      }
+    }
   }
 }
 object HighLevelServerHandler {
