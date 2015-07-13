@@ -1,19 +1,18 @@
 package scimap
 package handler
 
-import akka.stream.scaladsl.Flow
+import akka.stream.scaladsl._
 import akka.util.ByteString
 import javax.net.ssl.SSLContext
-import akka.stream.scaladsl.BidiFlow
 import akka.stream.io.SslTlsInbound
 import akka.stream.io.SslTlsOutbound
 import akka.stream.io.SessionBytes
 import akka.stream.io.SessionTruncated
-import akka.stream.scaladsl.FlattenStrategy
 import akka.stream.stage.StatefulStage
 import akka.stream.stage.Context
 import akka.stream.stage.SyncDirective
 import akka.stream.io.NegotiateNewSession
+import scimap.handler.TlsStatefulWrapperStage.{InboundResult, Inbound}
 import scala.collection.immutable
 import akka.stream.io.SendBytes
 import akka.stream.BidiShape
@@ -21,7 +20,10 @@ import akka.stream.io.SslTls
 import akka.stream.io.Server
 import akka.stream.io.SslTlsPlacebo
 import scala.collection.immutable
-import akka.stream.scaladsl.Source
+import akka.stream.io.SessionBytes
+import scimap.handler.TlsStatefulWrapperStage.Outbound
+import scimap.handler.TlsStatefulWrapperStage.OutboundResult
+import akka.stream.FlowShape
 
 case class FlowBuilder(
   debug: Boolean,
@@ -69,7 +71,8 @@ case class FlowBuilder(
           case ServerResponse.CloseConnection =>
             ctx.finish()
           case ServerResponse.StartTls if sslContext.isDefined =>
-            emit(Iterator.single(negotiation), ctx)
+            // Ignore
+            emit(Iterator.empty, ctx)
           case _ =>
             emit(Iterator.single(SendBytes(ByteString(serverResponseToStringDebug(chunk) + "\r\n", "US-ASCII"))), ctx)
         }
@@ -86,27 +89,47 @@ case class FlowBuilder(
       withDebug("Server Cmd").
       transform(() => new CloseConnectionStage)
   }
-  
-  def byteStringToByteString(handler: () => ServerHandler): Flow[ByteString, ByteString, Unit] = {
-//    val switchableTls = BidiFlow() { b =>
-//      val in = Flow[ByteString]
-//      in ~> inBcast ~> tlsInbound    ~> inMerge ~> handler ~> outBcast
-//            inBcast ~> nonTlsInbound ~> inMerge
-//      outBcast ~> tlsOutbound    ~> outMerge ~> out
-//      outBcast ~> nonTlsOutbound ~> outMerge
-//    }
-    
-    val bidiFlow = BidiFlow() { b =>
-      val inbound = b.add(tlsInboundToClientParseResult().withDebug("Inbound"))
-      val outbound = b.add(serverResponseToTlsOutbound().withDebug("Outbound"))
-      BidiShape(outbound, inbound)
-    }
+
+  def tlsEnabledByteStringToByteString(handler: () => ServerHandler): Flow[ByteString, ByteString, Unit] = {
     val tlsHandler = sslContext.map(SslTls(_, negotiation, Server)).getOrElse(SslTlsPlacebo.forScala)
-    // TODO: is reversed ok here?
-    val a = bidiFlow.atop(tlsHandler).reversed
-    bidiFlow.atop(tlsHandler).reversed.join(clientParseResultToServer(handler))
-//    byteStringToClientParseResult().
-//      via(clientParseResultToServer(handler)).
-//      via(serverResponseToByteString())
+      
+    val switchableTls = FlowGraph.partial() { implicit b =>
+      import FlowGraph.Implicits._
+      
+      val inBcast = b.add(Broadcast[InboundResult](2))
+      val insecureInbound = b.add(Flow[InboundResult].mapConcat {
+        case Left(_) => immutable.Iterable.empty[ClientCommand.ParseResult]
+        case Right(res) => immutable.Iterable(res)
+      })
+      val tls = b.add(tlsHandler)
+      val secureInbound = b.add(Flow[InboundResult].mapConcat {
+        case Right(_) => immutable.Iterable.empty[ByteString]
+        case Left(res) => immutable.Iterable(res)
+      })
+      val inMerge = b.add(Merge[ClientCommand.ParseResult](2))
+      val inHandler = b.add(clientParseResultToServer(handler).transform(() => new Outbound))
+      val outBcast = b.add(Broadcast[OutboundResult](2))
+      val insecureOutbound = b.add(Flow[OutboundResult].mapConcat {
+        case OutboundResult(res, true) => immutable.Iterable.empty[ServerResponse]
+        case OutboundResult(res, false) => immutable.Iterable(res)
+      })
+      val secureOutbound = b.add(Flow[OutboundResult].mapConcat {
+        case OutboundResult(res, false) => immutable.Iterable.empty[ServerResponse]
+        case OutboundResult(res, true) => immutable.Iterable(res)
+      })
+      val outMerge = b.add(Merge[ByteString](2))
+      
+      inMerge <~ insecureInbound <~ inBcast
+      tls.in2 <~ secureInbound <~ inBcast
+      inMerge <~ b.add(tlsInboundToClientParseResult) <~ tls.out2
+      outBcast <~ inHandler <~ inMerge
+      
+      outMerge <~ b.add(serverResponseToByteString) <~ insecureOutbound <~ outBcast
+      tls.in1 <~ b.add(serverResponseToTlsOutbound) <~ secureOutbound <~ outBcast
+      outMerge <~ tls.out1
+      
+      FlowShape(inBcast.in, outMerge.out)
+    }
+    Flow[ByteString].transform(() => new Inbound).via(switchableTls)
   }
 }

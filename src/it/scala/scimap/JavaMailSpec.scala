@@ -17,6 +17,8 @@ import javax.net.ssl.TrustManagerFactory
 import java.security.SecureRandom
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
+  sequential
+  
   "JavaMail API" >> {
 
     "Should be able to fetch simple messages" >> { ctx: Context =>
@@ -71,15 +73,18 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
 //    }
     
     // TODO: Pending https://groups.google.com/forum/#!topic/akka-user/yPtCVRXPW10
-//    "Should be able to handle TLS" >> { ctx: Context =>
-//      ctx.useTls()
-//      ctx.server.users += createTestUser
-//      ctx.daemon.start()
-//      val inbox = ctx.store.getFolder("INBOX")
-//      inbox.open(Folder.READ_WRITE)
-//      val msgs = inbox.getMessages
-//      1 === 1
-//    }
+    "Should be able to handle TLS" >> { ctx: Context =>
+      ctx.useTls()
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      val inbox = ctx.store.getFolder("INBOX")
+      inbox.open(Folder.READ_WRITE)
+      val msgs = inbox.getMessages
+      msgs.length === 30
+      val secondMsg = msgs(1)
+      secondMsg.getFlags === new Flags()
+      secondMsg.getAllRecipients.toSeq === Seq(new InternetAddress("baz@qux"))
+    }
   }
     
   def createTestUser() = {

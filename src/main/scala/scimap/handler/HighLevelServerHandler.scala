@@ -36,16 +36,15 @@ class HighLevelServerHandler(val server: HighLevelServer)
       case (_, Some(cli.CommandSuccess(cli.Logout(tag)))) =>
         handleLogout(tag)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(auth: cli.Authenticate))) =>
-        println("AUTH, YAY!")
         requestAuthentication(auth)
       case (State.NotAuthenticated, Some(cli.UnrecognizedCommand(seq))) if pendingAuthentication.isDefined =>
         handlePendingAuthentication(seq)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(cli.StartTls(tag)))) =>
         Future.successful(Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls))
-      case (State.NotAuthenticated, _) =>
-        failAndClose("Not authenticated")
       case (_, Some(cli.CommandSuccess(cli.Capability(tag)))) =>
         handleCapabilities(tag)
+      case (State.NotAuthenticated, _) =>
+        failAndClose("Not authenticated")
       case (s, Some(cli.CommandSuccess(cli.Examine(tag, mailbox)))) if s >= State.Authenticated =>
         handleSelectOrExamine(tag, mailbox, false)
       case (s, Some(cli.CommandSuccess(cli.Select(tag, mailbox)))) if s >= State.Authenticated =>

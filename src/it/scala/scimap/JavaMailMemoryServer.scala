@@ -17,6 +17,8 @@ import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
 import java.security.SecureRandom
 import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
+import java.security.cert.X509Certificate
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {
@@ -26,6 +28,7 @@ trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
     finally {
       if (ctx.storeInitialized) ctx.store.close()
       ctx.system.shutdown()
+      ctx.system.awaitTermination()
     }
   }
 }
@@ -48,6 +51,7 @@ object JavaMailMemoryServer {
       keyStoreResourcePath: String = "/keystore",
       trustStoreResourcePath: String = "/truststore",
       cipherSuites: Option[Seq[String]] =
+        // Insecure on purpose so we don't have to have JSSE installed
         Some(Seq("TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA", "TLS_RSA_WITH_AES_128_CBC_SHA"))
     ): Unit = {
       useClientTls = true
@@ -59,7 +63,11 @@ object JavaMailMemoryServer {
     
     lazy val session = {
       val props = new Properties()
-      if (useClientTls) props.setProperty("mail.imap.starttls.required", "true")
+      if (useClientTls) {
+        props.setProperty("mail.imap.starttls.required", "true")
+        props.setProperty("mail.imap.ssl.ciphersuites", daemon.cipherSuites.get.mkString(" "))
+        props.setProperty("mail.imap.ssl.trust", "*")
+      }
       val session = Session.getDefaultInstance(props)
       session.setDebug(true)
       session
@@ -82,18 +90,16 @@ object JavaMailMemoryServer {
     // Most of this taken from akka stream UT
     val keyStore = KeyStore.getInstance(KeyStore.getDefaultType)
     keyStore.load(getClass.getResourceAsStream(keyStoreResourcePath), password.toCharArray)
-
-    val trustStore = KeyStore.getInstance(KeyStore.getDefaultType)
-    trustStore.load(getClass.getResourceAsStream(trustStoreResourcePath), password.toCharArray)
-
     val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm)
     keyManagerFactory.init(keyStore, password.toCharArray)
-
+    
+    val trustStore = KeyStore.getInstance(KeyStore.getDefaultType)
+    trustStore.load(getClass.getResourceAsStream(trustStoreResourcePath), password.toCharArray)
     val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm)
     trustManagerFactory.init(trustStore)
-
-    val context = SSLContext.getInstance("TLS")
-    context.init(keyManagerFactory.getKeyManagers, trustManagerFactory.getTrustManagers, new SecureRandom)
-    context
+    
+    val ctx = SSLContext.getInstance("TLS")
+    ctx.init(keyManagerFactory.getKeyManagers, trustManagerFactory.getTrustManagers, new SecureRandom)
+    ctx
   }
 }
