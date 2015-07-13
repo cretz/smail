@@ -9,6 +9,8 @@ trait HighLevelServer {
   
   def currentMailbox: Option[Mailbox]
   
+  def listen(f: Option[ServerResponse => Unit]): Unit
+  
   def capabilities(): Future[Seq[Imap.Capability]] = Future.successful(Seq(
     Imap.Capability.Imap4Rev1,
     Imap.Capability.StartTls,
@@ -30,6 +32,7 @@ object HighLevelServer {
   trait Folder {
     def name: String
     def children(): Future[Seq[Folder]]
+    def listen(f: Option[ServerResponse => Unit]): Unit
   }
   
   trait Mailbox extends Folder {

@@ -19,6 +19,7 @@ import java.security.SecureRandom
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import java.security.cert.X509Certificate
+import akka.stream.Supervision
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {

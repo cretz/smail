@@ -15,9 +15,18 @@ import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.TrustManagerFactory
 import java.security.SecureRandom
+import javax.mail.event.MessageCountListener
+import javax.mail.event.MessageCountEvent
+import scala.concurrent.Future
+import scala.concurrent.duration._
+import org.specs2.concurrent.ExecutionEnv
+import javax.mail.UIDFolder
+import com.sun.mail.imap.IMAPFolder
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
+  
+  type EE = ExecutionEnv
   
   "JavaMail API" >> {
 
@@ -55,24 +64,81 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       secondMsg.getSize === 14
     }
     
-    // TODO: more commands like LIST
-//    "Should handle more scenarios" >> { ctx: Context =>
-//      // We try to hit the commands we didn't in the previous test
-//      ctx.server.users += createTestUser
+    "Should list properly" >> { ctx: Context =>
+      // We try to hit the commands we didn't in the previous test
+      val (testUsername, testUser) = createTestUser
+      ctx.server.users += testUsername -> testUser
+      ctx.daemon.start()
+      // Let's see the children of the default folder
+      val defaultFolder = ctx.store.getDefaultFolder
+      defaultFolder.getName === ""
+      val folders = defaultFolder.list
+      folders.length === 1
+      folders(0).getName === "INBOX"
+      // Open the inbox in read-write for fun...
+      val inbox = ctx.store.getFolder("INBOX")
+      inbox.open(Folder.READ_WRITE)
+      inbox.getMessages.length === 30
+      // TODO: Namespaces...
+      // val namespaces = ctx.store.getPersonalNamespaces
+    }
+    
+    "Should handle non-idle count update" >> { implicit ee: EE => ctx: Context =>
+      val (testUsername, testUser) = createTestUser
+      ctx.server.users += testUsername -> testUser
+      ctx.daemon.start()
+      val inbox = ctx.store.getFolder("INBOX")
+      inbox.open(Folder.READ_WRITE)
+      inbox.getMessages.length === 30
+      @volatile var countEvents = Seq.empty[MessageCountEvent]
+      inbox.addMessageCountListener(new MessageCountListener {
+        override def messagesAdded(e: MessageCountEvent) = countEvents :+= e
+        override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
+      })
+      // Add a message
+      testUser.mailboxes.values.head.messages :+= newMessage(3000)
+      // We have to wait over a second because of Java IMAP impl
+      Thread.sleep(1100)
+      // Fetch message count to trigger listener
+      inbox.getMessageCount()
+      countEvents.size must be_==(1).eventually
+      countEvents(0).getType === MessageCountEvent.ADDED
+      countEvents(0).getMessages.length === 1
+      val msg = countEvents(0).getMessages()(0)
+      msg.getMessageNumber === 31
+      inbox.asInstanceOf[UIDFolder].getUID(msg) === 3000
+      msg.getSubject === "Test 3000"
+      msg.getContent === "Test message 3000"
+    }
+    
+      // TODO: this
+//    "Should handle idle count update" >> { implicit ee: EE => ctx: Context =>
+//      val (testUsername, testUser) = createTestUser
+//      ctx.server.users += testUsername -> testUser
+//      ctx.server._capabilities :+= Imap.Capability.Idle
 //      ctx.daemon.start()
-//      // Let's see the children of the default folder
-//      val defaultFolder = ctx.store.getDefaultFolder
-//      val folders = defaultFolder.list
-//      folders.length === 27
-//      // Open the inbox in read-write for fun...
 //      val inbox = ctx.store.getFolder("INBOX")
 //      inbox.open(Folder.READ_WRITE)
-//      val msgs = inbox.getMessages
-//      msgs.length === 30
-//      1 === 1
+//      inbox.getMessages.length === 30
+//      @volatile var countEvents = Seq.empty[MessageCountEvent]
+//      inbox.addMessageCountListener(new MessageCountListener {
+//        override def messagesAdded(e: MessageCountEvent) = countEvents :+= e
+//        override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
+//      })
+//      // Put into idle to get updates
+//      inbox.asInstanceOf[IMAPFolder].idle()
+//      // Add a message
+//      testUser.mailboxes.values.head.messages :+= newMessage(3000)
+//      countEvents.size must be_==(1).eventually
+//      countEvents(0).getType === MessageCountEvent.ADDED
+//      countEvents(0).getMessages.length === 1
+//      val msg = countEvents(0).getMessages()(0)
+//      msg.getMessageNumber === 31
+//      inbox.asInstanceOf[UIDFolder].getUID(msg) === 3000
+//      msg.getSubject === "Test 3000"
+//      msg.getContent === "Test message 3000"
 //    }
-    
-    // TODO: Pending https://groups.google.com/forum/#!topic/akka-user/yPtCVRXPW10
+
     "Should be able to handle TLS" >> { ctx: Context =>
       ctx.useTls()
       ctx.server.users += createTestUser
@@ -86,11 +152,11 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       secondMsg.getAllRecipients.toSeq === Seq(new InternetAddress("baz@qux"))
     }
   }
-    
-  def createTestUser() = {
+  
+  def newMessage(uid: Int) = {
     import InMemoryServer._
     import MailHeaders._
-    def newMessage(uid: Int) = new InMemoryMessage(
+    new InMemoryMessage(
       uid = uid,
       flags = Set.empty,
       headers = InMemory() +
@@ -101,6 +167,10 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
         (To -> Seq(Imap.MailboxAddress("baz" -> "qux"))),
       body = "Test message " + uid
     )
+  }
+    
+  def createTestUser() = {
+    import InMemoryServer._
     "foo" -> new InMemoryUser(
       username = "foo",
       password = "bar",

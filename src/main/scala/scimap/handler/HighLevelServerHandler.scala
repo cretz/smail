@@ -19,8 +19,32 @@ class HighLevelServerHandler(val server: HighLevelServer)
   @volatile var pendingAuthentication = Option.empty[cli.Authenticate]
   
   override def handle(res: Option[cli.ParseResult]): Option[Future[Seq[ser]]] = {
-    if (state != State.Started && res.isEmpty) return None
-    else return Some(handleOption(res))
+    val buff = drainBuffer()
+    if (state != State.Started && res.isEmpty) {
+      if (buff.isEmpty) None
+      else Some(Future.successful(buff))
+    } else {
+      Some(handleOption(res).map(buff ++ _))
+    }
+  }
+ 
+  // TODO: support IDLE (RFC2177) and NOTIFY (RFC5465)
+  var _outOfBandBuffer = Seq.empty[ServerResponse]
+  def drainBuffer(): Seq[ServerResponse] = {
+    _outOfBandBuffer.synchronized {
+      if (_outOfBandBuffer.isEmpty) Seq.empty
+      else {
+        val ret = _outOfBandBuffer
+        _outOfBandBuffer = Seq.empty
+        ret
+      }
+    }
+  }
+  def addToBuffer(resp: ServerResponse): Unit = {
+    _outOfBandBuffer.synchronized {
+      if (_outOfBandBuffer.length >= MaxOutOfBandBufferSize) _outOfBandBuffer = _outOfBandBuffer.tail
+      _outOfBandBuffer :+= resp
+    }
   }
   
   // TODO: lots of cleanup needed here
@@ -432,6 +456,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
   }
 }
 object HighLevelServerHandler {
+  val MaxOutOfBandBufferSize = 500
+  
   object State extends Enumeration {
     val Started = Value
     val NotAuthenticated = Value

@@ -4,6 +4,8 @@ package handler
 import java.time.ZonedDateTime
 import scimap.Imap.BodyStructureSingleExtension
 import scala.concurrent.Future
+import scala.util.matching.Regex
+import java.util.regex.Pattern
 
 // Basically only for testing
 class InMemoryServer extends HighLevelServer {
@@ -12,9 +14,24 @@ class InMemoryServer extends HighLevelServer {
   
   @volatile
   var users = Map.empty[String, InMemoryUser]
+  @volatile
   var currentUser = Option.empty[InMemoryUser]
+  @volatile
   var currentMailbox = Option.empty[InMemoryMailbox]
+  @volatile
   var currentMailboxReadOnly = false
+  @volatile
+  var _capabilities = Seq(
+    Imap.Capability.Imap4Rev1,
+    Imap.Capability.StartTls,
+    Imap.Capability.AuthPlain
+  )
+  @volatile
+  var listenCallback = Option.empty[ServerResponse => Unit]
+  
+  override def listen(f: Option[ServerResponse => Unit]): Unit = listenCallback = f
+  
+  override def capabilities() = Future.successful(_capabilities)
   
   def authenticatePlain(username: String, password: String): Future[Boolean] =
     users.get(username) match {
@@ -33,16 +50,45 @@ class InMemoryServer extends HighLevelServer {
     })
   
   def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Future[Seq[ListItem]] = {
-    // TODO: do we start at the current mailbox?
-//    println("Asking for", tokens)
-//    var currentMailboxes =
-//      if (startsAtRoot) Map.empty[String, Mailbox]
-//      else Map("/")
-//    // Go over each token, updating the list of mailboxes
-//    tokens.zipWithIndex.foreach { case (token, index) =>
-//      token match
-//    }
-    ???
+    // TODO: For now we just regex. Obviously this could be improved.
+    // Obtain all names of all folders...
+    def folderNames(prefix: String, folders: Iterable[InMemoryFolder]): Map[String, InMemoryFolder] = {
+      folders.flatMap({ folder =>
+        val name = prefix + hierarchyDelimiter.get + folder.name
+        folderNames(name, folder._children) + (name -> folder)
+      }).toMap
+    }
+    val allFolders =
+      if (startsAtRoot || currentMailbox.isEmpty) folderNames("", currentUser.get.mailboxes.values)
+      else folderNames("", Iterable(currentMailbox.get))
+    // Go over each token set fetching
+    println("FOLDER NAMES: " + allFolders.keys.toSeq)
+    val foundFolders = tokenSets.flatMap({ tokenSet =>
+      val regexString = tokenSet.foldLeft(if (startsAtRoot) "" else "/") { case (regex, token) =>
+        regex + (token match {
+          case Imap.ListToken.Str(str) => Pattern.quote(str)
+          case Imap.ListToken.Delimiter => Pattern.quote(hierarchyDelimiter.get)
+          // This next part only matches to next delimiter
+          // Needs to handle if this is at the end or if the delim is > a single char
+          case Imap.ListToken.NameWildcard => "[^" + Pattern.quote(hierarchyDelimiter.get) + "]*"
+          case Imap.ListToken.PathWildcard => ".*"
+        })
+      }
+      println("REGEX " + regexString + " FROM TOKENS: " + tokenSet)
+      // Compile and get all folders that match it
+      val pattern = Pattern.compile(regexString)
+      allFolders.filterKeys(pattern.matcher(_).matches)
+    }).toMap
+    println("FOUND: " + foundFolders.keys.toSeq)
+    // Convert to list items
+    Future.successful(foundFolders.map({ case (name, folder) =>
+      // Mailboxes are the only selectable ones
+      // TODO: handle unmarked
+      val attrs = 
+        if (folder.isInstanceOf[InMemoryMailbox]) Seq.empty[Imap.ListAttribute]
+        else Seq(Imap.ListAttribute.NoSelect)
+      ListItem(name, attrs)
+    }).toSeq)
   }
   
   def flushCurrentMailboxDeleted(): Future[Unit] = Future.successful(currentMailbox.foreach(_.flushDeleted()))
@@ -64,6 +110,10 @@ object InMemoryServer {
     @volatile var name: String,
     @volatile var _children: Seq[InMemoryFolder] = Seq.empty
   ) extends Folder {
+    @volatile
+    var listenCallback = Option.empty[ServerResponse => Unit]
+    def listen(f: Option[ServerResponse => Unit]): Unit = listenCallback = f
+    
     override def children(): Future[Seq[Folder]] = Future.successful(_children)
   }
   

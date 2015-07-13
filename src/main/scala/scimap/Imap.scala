@@ -79,6 +79,7 @@ object Imap {
     case object Imap4Rev1 extends Capability
     case object StartTls extends Capability
     case object LoginDisabled extends Capability
+    case object Idle extends Capability
     case class Auth(mechanism: String) extends Capability
     val AuthPlain = Auth("PLAIN")
     case class Custom(contents: String, prefixWithX: Boolean = true) extends Capability

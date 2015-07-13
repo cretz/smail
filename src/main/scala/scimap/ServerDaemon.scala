@@ -18,9 +18,6 @@ case class ServerDaemon(
   sslContext: Option[SSLContext],
   cipherSuites: Option[Seq[String]]
 )(implicit system: ActorSystem, mat: Materializer) {
-  
-//  def start(): Future[Unit] = Tcp().bind(interface, port).runForeach(_.handleWith(
-//    FlowBuilder(debug, sslContext, cipherSuites).byteStringToByteString(handler)))
   def start(): Future[Unit] = Tcp().bind(interface, port).runForeach(_.handleWith(
     FlowBuilder(debug, sslContext, cipherSuites).tlsEnabledByteStringToByteString(handler)))
 }

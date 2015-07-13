@@ -72,7 +72,7 @@ trait ServerResponseToString extends (ServerResponse => String) {
       "* CAPABILITY " + names.map(capability).mkString(" ")
     case List(name, delimiter, nameAttributes) =>
       "* LIST (" + nameAttributes.mkString(" ") + ") " +
-        delimiter.map(d => safeString(d.toString)).getOrElse("NIL") + safeString(name)
+        delimiter.map(d => safeString(d.toString, true)).getOrElse("NIL") + " " + safeString(name)
     case LSub(name, delimiter, nameAttributes) =>
       "* LSUB (" + nameAttributes.mkString(" ") + ") " +
         delimiter.map(d => safeString(d.toString)).getOrElse("NIL") + safeString(name)
@@ -95,7 +95,7 @@ trait ServerResponseToString extends (ServerResponse => String) {
     code match {
       case Alert(msg) => "ALERT " + safeString(msg)
       case BadCharset(Seq()) => "BADCHARSET"
-      case BadCharset(charsets) => "BADCHARSET " + charsets.map(safeString).mkString(",")
+      case BadCharset(charsets) => "BADCHARSET " + charsets.map(safeString(_)).mkString(",")
       case Capability(names) => "CAPABILITY " + names.map(capability).mkString(" ")
       case Parse(msg) => "PARSE " + safeString(msg)
       case PermanentFlags(flags) => "PERMANENTFLAGS (" + flags.mkString(" ") + ")"
@@ -114,6 +114,7 @@ trait ServerResponseToString extends (ServerResponse => String) {
       case Imap4Rev1 => "IMAP4rev1"
       case StartTls => "STARTTLS"
       case LoginDisabled => "LOGINDISABLED"
+      case Idle => "IDLE"
       case Auth(mechanism) => s"AUTH=$mechanism"
       case Custom(contents, true) => s"X$contents"
       case Custom(contents, false) => contents
@@ -124,12 +125,12 @@ trait ServerResponseToString extends (ServerResponse => String) {
     return "{" + string.length + s"}\r\n$string"
   }
   
-  def safeString(string: String): String = {
+  def safeString(string: String, forceQuote: Boolean = false): String = {
     // Empty strings are just double quotes
     if (string.isEmpty) return "\"\""
     // Only if the string contains a slash, double quote, or a space do we want to double quote it
     val result = string.replace("\\", "\\\\").replace("\"","\\\"")
-    if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
+    if (!forceQuote && result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
     else '"' + result + '"'
   }
 }

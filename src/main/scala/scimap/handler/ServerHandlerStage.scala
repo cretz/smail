@@ -9,6 +9,7 @@ import scala.concurrent.Future
 
 class ServerHandlerStage(val handler: ServerHandler)
     extends StatefulStage[ClientCommand.ParseResult, Future[Seq[ServerResponse]]] {
+  
   override def initial = new State {
     override def onPush(chunk: ClientCommand.ParseResult, ctx: Context[Future[Seq[ServerResponse]]]): SyncDirective = {
       handleWithFailure(Some(chunk), ctx)
