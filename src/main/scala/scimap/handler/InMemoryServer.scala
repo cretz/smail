@@ -43,43 +43,121 @@ class InMemoryServer extends HighLevelServer {
     }
   
   def select(mailbox: String, readOnly: Boolean): Future[Option[Mailbox]] =
-    Future.successful(currentUser.flatMap(_.mailboxes.get(mailbox)).map { ret =>
-      currentMailbox = Some(ret)
-      currentMailboxReadOnly = readOnly
-      ret
+    Future.successful(currentUser.flatMap(_.folders.get(mailbox)).collect {
+      case ret: InMemoryMailbox =>
+        currentMailbox = Some(ret)
+        currentMailboxReadOnly = readOnly
+        ret
     })
+    
+  def create(name: String): Future[Option[String]] = {
+    // If it ends with the separator, it's just a folder, otherwise it's a mailbox
+    val isFolder = name.endsWith(hierarchyDelimiter.get)
+    Future.successful(
+      create(name, if (isFolder) new InMemoryFolder("") else new InMemoryMailbox(""))
+    )
+  }
   
-  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Future[Seq[ListItem]] = {
-    // TODO: For now we just regex. Obviously this could be improved.
-    // Obtain all names of all folders...
-    def folderNames(prefix: String, folders: Iterable[InMemoryFolder]): Map[String, InMemoryFolder] = {
-      folders.flatMap({ folder =>
-        val name = prefix + hierarchyDelimiter.get + folder.name
-        folderNames(name, folder._children) + (name -> folder)
-      }).toMap
+  def create(name: String, item: InMemoryFolder): Option[String] = {
+    // If it ends with the separator, it's just a folder, otherwise it's a mailbox
+    val isFolder = name.endsWith(hierarchyDelimiter.get)
+    // Trim it and split it across the delimiter
+    val pieces = name.stripSuffix(hierarchyDelimiter.get).split(hierarchyDelimiter.get)
+    // Set the name on the item
+    item.name = pieces.last
+    // Create all needed parents to satisfy this
+    val parent = pieces.dropRight(1).foldLeft(Option.empty[InMemoryFolder])({ case (parent, name) =>
+      Some(parent.flatMap(_._children.find(_.name == name)).getOrElse {
+        val child = new InMemoryFolder(name)
+        parent match {
+          case Some(parent) =>
+            parent._children :+= child
+            child
+          case None =>
+            currentUser.get.folders += name -> child
+            child
+        }
+      })
+    }).get
+    // Failure if the child already exists
+    if (parent._children.exists(_.name == pieces.last)) Some("Cannot find parent mailbox")
+    else {
+      parent._children :+= item
+      None
     }
-    val allFolders =
-      if (startsAtRoot || currentMailbox.isEmpty) folderNames("", currentUser.get.mailboxes.values)
-      else folderNames("", Iterable(currentMailbox.get))
-    // Go over each token set fetching
-    println("FOLDER NAMES: " + allFolders.keys.toSeq)
-    val foundFolders = tokenSets.flatMap({ tokenSet =>
-      val regexString = tokenSet.foldLeft(if (startsAtRoot) "" else "/") { case (regex, token) =>
-        regex + (token match {
-          case Imap.ListToken.Str(str) => Pattern.quote(str)
-          case Imap.ListToken.Delimiter => Pattern.quote(hierarchyDelimiter.get)
-          // This next part only matches to next delimiter
-          // Needs to handle if this is at the end or if the delim is > a single char
-          case Imap.ListToken.NameWildcard => "[^" + Pattern.quote(hierarchyDelimiter.get) + "]*"
-          case Imap.ListToken.PathWildcard => ".*"
-        })
+  }
+  
+  def delete(name: String): Future[Option[String]] =
+    Future.successful(deleteFolder(name).right.toOption)
+  
+  def deleteFolder(name: String): Either[InMemoryFolder, String] = {
+    // First find the parents
+    val namePieces = name.stripPrefix(hierarchyDelimiter.get).
+      stripSuffix(hierarchyDelimiter.get).split(hierarchyDelimiter.get)
+    if (namePieces.length == 1) {
+      currentUser.get.folders.get(namePieces.head) match {
+        case Some(child) =>
+          currentUser.get.folders -= namePieces.head
+          Left(child)
+        case None =>
+          Right("Mailbox not found")
       }
-      println("REGEX " + regexString + " FROM TOKENS: " + tokenSet)
-      // Compile and get all folders that match it
-      val pattern = Pattern.compile(regexString)
-      allFolders.filterKeys(pattern.matcher(_).matches)
+    } else {
+      val parents = namePieces.dropRight(1).foldLeft(Seq.empty[InMemoryFolder]) {
+        case (Seq(), name) => currentUser.get.folders.get(name).toSeq
+        case (parents, childName) => parents.flatMap(_._children.find(_.name == childName))
+      }
+      val folder = parents.flatMap({ parent =>
+        parent._children.find(_.name == namePieces.last).map(parent -> _)
+      }).headOption
+      folder.map({ case (parent, child) =>
+        // It can't have any mailbox children
+        if (child.hasMailboxChild()) Right("Mailbox has child mailboxes")
+        else {
+          parent._children = parent._children.filterNot(_.name == child.name)
+          Left(child)
+        }
+      }).getOrElse(Right("Mailbox not found"))
+    }
+  }
+    
+  def rename(oldName: String, newName: String): Future[Option[String]] = {
+    val err = deleteFolder(oldName) match {
+      case Right(err) => Some(err)
+      case Left(folder) => create(newName.stripPrefix(hierarchyDelimiter.get), folder)
+    }
+    Future.successful(err)
+  }
+  
+  def allFolderNames(
+    prefix: String = "",
+    folders: Iterable[InMemoryFolder] = currentUser.get.folders.values
+  ): Map[String, InMemoryFolder] = {
+    folders.flatMap({ folder =>
+      val name = prefix + hierarchyDelimiter.get + folder.name
+      allFolderNames(name, folder._children) + (name -> folder)
     }).toMap
-    println("FOUND: " + foundFolders.keys.toSeq)
+  }
+  
+  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean): Future[Seq[ListItem]] = {
+    // TODO: For now we just regex. Obviously this could be improved.
+    val allFolders =
+      if (startsAtRoot || currentMailbox.isEmpty) allFolderNames("", currentUser.get.folders.values)
+      else allFolderNames("", Iterable(currentMailbox.get))
+    // Go over each token set fetching
+    val regexString = tokens.foldLeft(Pattern.quote(hierarchyDelimiter.get)) { case (regex, token) =>
+      regex + (token match {
+        case Imap.ListToken.Str(str) => Pattern.quote(str)
+        case Imap.ListToken.Delimiter => Pattern.quote(hierarchyDelimiter.get)
+        // This next part only matches to next delimiter
+        // Needs to handle if this is at the end or if the delim is > a single char
+        case Imap.ListToken.NameWildcard => "[^" + Pattern.quote(hierarchyDelimiter.get) + "]*"
+        case Imap.ListToken.PathWildcard => ".*"
+      })
+    }
+    // Compile and get all folders that match it
+    val pattern = Pattern.compile(regexString)
+    val foundFolders = allFolders.filterKeys(pattern.matcher(_).matches)
     // Convert to list items
     Future.successful(foundFolders.map({ case (name, folder) =>
       // Mailboxes are the only selectable ones
@@ -103,7 +181,7 @@ object InMemoryServer {
   class InMemoryUser(
     @volatile var username: String,
     @volatile var password: String,
-    @volatile var mailboxes: Map[String, InMemoryMailbox]
+    @volatile var folders: Map[String, InMemoryFolder]
   )
   
   class InMemoryFolder(
@@ -115,13 +193,17 @@ object InMemoryServer {
     def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
     
     override def children(): Future[Seq[Folder]] = Future.successful(_children)
+    
+    def hasMailboxChild(): Boolean = _children.exists { child =>
+      child.isInstanceOf[InMemoryMailbox] || child.hasMailboxChild()
+    }
   }
   
   class InMemoryMailbox(
     private var nameParam: String,
-    @volatile var messages: Seq[InMemoryMessage],
-    @volatile var flags: Set[Imap.Flag],
-    @volatile var permanentFlags: Set[Imap.Flag],
+    @volatile var messages: Seq[InMemoryMessage] = Seq.empty,
+    @volatile var flags: Set[Imap.Flag] = Set.empty,
+    @volatile var permanentFlags: Set[Imap.Flag] = Set.empty,
     @volatile var uidValidity: BigInt = System.currentTimeMillis,
     private var childrenParam: Seq[InMemoryFolder] = Seq.empty
   ) extends InMemoryFolder(nameParam, childrenParam) with Mailbox {
@@ -140,7 +222,6 @@ object InMemoryServer {
     
     def addMessage(msg: InMemoryMessage): Unit = {
       messages :+= msg
-      println("LISTEN CALLBACK: " + listenCallback)
       listenCallback.foreach(_(CallbackUpdate.Exists(exists)))
     }
     

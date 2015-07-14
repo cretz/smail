@@ -19,10 +19,13 @@ trait HighLevelServer {
   
   def authenticatePlain(username: String, password: String): Future[Boolean]
   def select(mailbox: String, readOnly: Boolean): Future[Option[Mailbox]]
+  def create(name: String): Future[Option[String]]
+  def delete(name: String): Future[Option[String]]
+  def rename(oldName: String, newName: String): Future[Option[String]]
   
   def hierarchyDelimiter: Option[String] = Some("/")
   def hierarchyRoots: Seq[String] = Seq("/", "~")
-  def list(tokenSets: Seq[Seq[Imap.ListToken]], startsAtRoot: Boolean): Future[Seq[ListItem]]
+  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean): Future[Seq[ListItem]]
   
   def flushCurrentMailboxDeleted(): Future[Unit]
   def closeCurrentMailbox(): Future[Unit]

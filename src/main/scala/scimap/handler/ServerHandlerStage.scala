@@ -1,15 +1,9 @@
 package scimap
 package handler
 
-import akka.stream.stage.SyncDirective
-import akka.stream.stage.StatefulStage
-import akka.stream.stage.Context
-import scala.util.Try
 import scala.concurrent.Future
-import akka.stream.stage.PushPullStage
 import akka.stream.stage.AsyncStage
 import akka.stream.stage.AsyncContext
-import akka.stream.stage.UpstreamDirective
 
 class ServerHandlerStage(val handler: ServerHandler)
     extends AsyncStage[ClientCommand.ParseResult, Future[Seq[ServerResponse]], Seq[ServerResponse]] {

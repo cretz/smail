@@ -22,6 +22,7 @@ import scala.concurrent.duration._
 import org.specs2.concurrent.ExecutionEnv
 import javax.mail.UIDFolder
 import com.sun.mail.imap.IMAPFolder
+import scimap.handler.InMemoryServer.InMemoryMailbox
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
@@ -96,7 +97,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
         override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
       })
       // Add a message
-      testUser.mailboxes.values.head.messages :+= newMessage(3000)
+      testUser.folders.values.head.asInstanceOf[InMemoryMailbox].addMessage(newMessage(3000))
       // We have to wait over a second because of Java IMAP impl
       Thread.sleep(1100)
       // Fetch message count to trigger listener
@@ -129,9 +130,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       // Wait just a bit
       Thread.sleep(200)
       // Add a message
-      println("ADDING MESSAGE")
-      testUser.mailboxes.values.head.addMessage(newMessage(3000))
-      println("ADDED")
+      testUser.folders.values.head.asInstanceOf[InMemoryMailbox].addMessage(newMessage(3000))
       countEvents.size must be_==(1).eventually
       countEvents(0).getType === MessageCountEvent.ADDED
       countEvents(0).getMessages.length === 1
@@ -153,6 +152,35 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       val secondMsg = msgs(1)
       secondMsg.getFlags === new Flags()
       secondMsg.getAllRecipients.toSeq === Seq(new InternetAddress("baz@qux"))
+    }
+
+    "Should be able to create a new mailbox and rename it and delete it" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      val topFolder = ctx.store.getFolder("NewTestFolder")
+      topFolder.exists() === false
+      topFolder.getFolder("NewTestMailbox").create(Folder.HOLDS_MESSAGES) === true
+      topFolder.exists() === true
+      // Grab all top level folders and make sure the two we expect are there
+      val folders = ctx.store.getDefaultFolder.list()
+      folders.length === 2
+      folders.exists(_.getName == "INBOX") === true
+      folders.exists(_.getFullName == "/INBOX") === true
+      folders.exists(_.getName == "NewTestFolder") === true
+      folders.exists(_.getFullName == "/NewTestFolder") === true
+      val childFolders = folders.find(_.getName == "NewTestFolder").get.list()
+      childFolders.length === 1
+      childFolders(0).getName === "NewTestMailbox"
+      childFolders(0).getFullName === "/NewTestFolder/NewTestMailbox"
+      // Now rename
+      childFolders(0).renameTo(topFolder.getFolder("OldTestMailbox")) === true
+      val updatedFolders = topFolder.list()
+      updatedFolders.length === 1
+      updatedFolders(0).getName === "OldTestMailbox"
+      updatedFolders(0).getFullName === "/NewTestFolder/OldTestMailbox"
+      // Now recursively delete from the top
+      topFolder.delete(true)
+      topFolder.exists() === false
     }
   }
   
@@ -177,7 +205,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     "foo" -> new InMemoryUser(
       username = "foo",
       password = "bar",
-      mailboxes = Map(
+      folders = Map(
         "INBOX" -> new InMemoryMailbox(
           "INBOX",
           flags = Set(Imap.Flag.Answered),

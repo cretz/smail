@@ -55,12 +55,18 @@ class HighLevelServerHandler(val server: HighLevelServer)
         Future.successful(Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls))
       case (_, Some(cli.CommandSuccess(cli.Capability(tag)))) =>
         handleCapabilities(tag)
-      case (State.NotAuthenticated, _) =>
+      case (state, _) if state < State.Authenticated =>
         failAndClose("Not authenticated")
-      case (s, Some(cli.CommandSuccess(cli.Examine(tag, mailbox)))) if s >= State.Authenticated =>
-        handleSelectOrExamine(tag, mailbox, false)
-      case (s, Some(cli.CommandSuccess(cli.Select(tag, mailbox)))) if s >= State.Authenticated =>
+      case (_, Some(cli.CommandSuccess(cli.Select(tag, mailbox)))) =>
         handleSelectOrExamine(tag, mailbox, true)
+      case (_, Some(cli.CommandSuccess(cli.Examine(tag, mailbox)))) =>
+        handleSelectOrExamine(tag, mailbox, false)
+      case (_, Some(cli.CommandSuccess(cli.Create(tag, mailbox)))) =>
+        handleCreate(tag, mailbox)
+      case (_, Some(cli.CommandSuccess(cli.Delete(tag, mailbox)))) =>
+        handleDelete(tag, mailbox)
+      case (_, Some(cli.CommandSuccess(cli.Rename(tag, oldName, newName)))) =>
+        handleRename(tag, oldName, newName)
       case (_, Some(cli.CommandSuccess(cli.Noop(tag)))) =>
         handleNoop(tag)
       case (_, Some(cli.CommandSuccess(cli.List(tag, reference, mailbox)))) =>
@@ -161,6 +167,27 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }
   }
   
+  def handleCreate(tag: String, name: String): Future[Seq[ser]] = {
+    server.create(name).map {
+      case None => Seq(ser.Ok("CREATE completed", Some(tag)))
+      case Some(err) => Seq(ser.No("Cannot create: " + err, Some(tag)))
+    }
+  }
+  
+  def handleDelete(tag: String, name: String): Future[Seq[ser]] = {
+    server.delete(name).map {
+      case None => Seq(ser.Ok("DELETE completed", Some(tag)))
+      case Some(err) => Seq(ser.No("Cannot delete: " + err, Some(tag)))
+    }
+  }
+  
+  def handleRename(tag: String, oldName: String, newName: String): Future[Seq[ser]] = {
+    server.rename(oldName, newName).map {
+      case None => Seq(ser.Ok("RENAME completed", Some(tag)))
+      case Some(err) => Seq(ser.No("Cannot rename: " + err, Some(tag)))
+    }
+  }
+  
   def handleNoop(tag: String): Future[Seq[ser]] = {
     var responses = Seq.empty[ser]
     server.currentMailbox.foreach { res =>
@@ -197,15 +224,22 @@ class HighLevelServerHandler(val server: HighLevelServer)
     )
     // Break apart the pieces
     val startsAtRoot = server.hierarchyRoots.exists(s => reference.startsWith(s) || mailbox.startsWith(s))
-    val combined = if (server.hierarchyRoots.exists(mailbox.startsWith)) mailbox else reference + mailbox
+    val combined =
+      if (server.hierarchyRoots.exists(mailbox.startsWith) || reference == "") mailbox
+      else if (delim.isDefined) reference + delim.get + mailbox
+      else reference + mailbox
+    val sansPrefix = delim.map(combined.stripPrefix).getOrElse(combined)
     val pieces = delim match {
-      case Some(delim) => combined.split(Pattern.quote(delim)).toSeq
-      case None => Seq(combined)
+      case Some(delim) => sansPrefix.split(Pattern.quote(delim)).toSeq
+      case None => Seq(sansPrefix)
     }
     // Go over each and create token sets
-    val tokenSets = pieces.map(listStringToTokens)
+    val tokens = pieces.map(listStringToTokens).foldLeft(Seq.empty[Imap.ListToken]) {
+      case (Seq(), next) => next 
+      case (prev, next) => (prev :+ Imap.ListToken.Delimiter) ++ next
+    }
     // Ask server for the list
-    server.list(tokenSets, startsAtRoot).map { list =>
+    server.list(tokens, startsAtRoot).map { list =>
       list.map(i => ser.List(i.path, delim, i.attrs)) :+ ser.Ok("LIST Completed", Some(tag))
     }
   }
