@@ -172,5 +172,7 @@ object ClientCommand {
     case class Search(command: ClientCommand.Search) extends UidCommand
   }
   
+  case class Idle(tag: String) extends ClientCommand
+  
   case class Extension(tag: String, name: String, arguments: Seq[ImapToken]) extends ClientCommand with AnyState
 }

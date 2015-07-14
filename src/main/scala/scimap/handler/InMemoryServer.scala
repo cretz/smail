@@ -27,9 +27,9 @@ class InMemoryServer extends HighLevelServer {
     Imap.Capability.AuthPlain
   )
   @volatile
-  var listenCallback = Option.empty[ServerResponse => Unit]
+  var listenCallback = Option.empty[CallbackUpdate => Unit]
   
-  override def listen(f: Option[ServerResponse => Unit]): Unit = listenCallback = f
+  override def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
   
   override def capabilities() = Future.successful(_capabilities)
   
@@ -111,8 +111,8 @@ object InMemoryServer {
     @volatile var _children: Seq[InMemoryFolder] = Seq.empty
   ) extends Folder {
     @volatile
-    var listenCallback = Option.empty[ServerResponse => Unit]
-    def listen(f: Option[ServerResponse => Unit]): Unit = listenCallback = f
+    var listenCallback = Option.empty[CallbackUpdate => Unit]
+    def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
     
     override def children(): Future[Seq[Folder]] = Future.successful(_children)
   }
@@ -136,6 +136,12 @@ object InMemoryServer {
         lifted(i.toInt - 1).getOrElse(return Future.successful(None))
       }
       Future.successful(Some(msgs))
+    }
+    
+    def addMessage(msg: InMemoryMessage): Unit = {
+      messages :+= msg
+      println("LISTEN CALLBACK: " + listenCallback)
+      listenCallback.foreach(_(CallbackUpdate.Exists(exists)))
     }
     
     def flushDeleted(): Unit = messages = messages.filterNot(_.flags.contains(Imap.Flag.Deleted))

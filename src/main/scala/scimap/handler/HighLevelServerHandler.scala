@@ -17,38 +17,26 @@ class HighLevelServerHandler(val server: HighLevelServer)
   // We accept the cheapness of volatile since state change in IMAP is not really racy anyways
   @volatile var state = State.Started
   @volatile var pendingAuthentication = Option.empty[cli.Authenticate]
+  @volatile var asyncCallback: Seq[ServerResponse] => Unit = { _ => ??? }
+  @volatile var currentlyRunningIdleTagAndUnsetter = Option.empty[(String, () => Unit)]
+  
+  override def registerOutOfBandCallback(cb: Seq[ServerResponse] => Unit): Unit = asyncCallback = cb
   
   override def handle(res: Option[cli.ParseResult]): Option[Future[Seq[ser]]] = {
-    val buff = drainBuffer()
-    if (state != State.Started && res.isEmpty) {
-      if (buff.isEmpty) None
-      else Some(Future.successful(buff))
-    } else {
-      Some(handleOption(res).map(buff ++ _))
-    }
-  }
- 
-  // TODO: support IDLE (RFC2177) and NOTIFY (RFC5465)
-  var _outOfBandBuffer = Seq.empty[ServerResponse]
-  def drainBuffer(): Seq[ServerResponse] = {
-    _outOfBandBuffer.synchronized {
-      if (_outOfBandBuffer.isEmpty) Seq.empty
-      else {
-        val ret = _outOfBandBuffer
-        _outOfBandBuffer = Seq.empty
-        ret
-      }
-    }
-  }
-  def addToBuffer(resp: ServerResponse): Unit = {
-    _outOfBandBuffer.synchronized {
-      if (_outOfBandBuffer.length >= MaxOutOfBandBufferSize) _outOfBandBuffer = _outOfBandBuffer.tail
-      _outOfBandBuffer :+= resp
-    }
+    if (state != State.Started && res.isEmpty) None
+    else Some(handleOption(res))
   }
   
   // TODO: lots of cleanup needed here
   def handleOption(res: Option[cli.ParseResult]): Future[Seq[ser]] = {
+    // If we're in idle, the only thing we accept from a client is DONE
+    if (currentlyRunningIdleTagAndUnsetter.isDefined) res match {
+      case Some(cli.UnrecognizedCommand(Seq(ImapToken.Str("DONE", _)))) =>
+        return endIdle()
+      case _ =>
+        failAndClose("Unacceptable command in IDLE state")
+    }
+    // Match other situations
     (state, res) match {
       case (State.Started, None) =>
         handleFirstConnect()
@@ -81,6 +69,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
         handleFetch(fetch)
       case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
         handleClose(tag)
+      case (_, Some(cli.CommandSuccess(cli.Idle(tag)))) =>
+        beginIdle(tag)
       case v =>
         failAndClose("Unknown state/command: " + v)
     }
@@ -447,12 +437,39 @@ class HighLevelServerHandler(val server: HighLevelServer)
   }
   
   def handleClose(tag: String): Future[Seq[ser]] = {
+    endIdle()
     server.flushCurrentMailboxDeleted().flatMap { _ =>
       server.closeCurrentMailbox().map { _ =>
         state = State.Authenticated
         Seq(ser.Ok("CLOSE completed", Some(tag)))
       }
     }
+  }
+  
+  def beginIdle(tag: String): Future[Seq[ser]] = {
+    // We require a mailbox to be selected
+    val currentMailbox = server.currentMailbox
+    if (state != State.Selected || currentMailbox.isEmpty)
+      Future.successful(Seq(ser.No("Mailbox must be selected for IDLE", Some(tag))))
+    else {
+      currentMailbox.get.listen(Some(doCallbackUpdate))
+      currentlyRunningIdleTagAndUnsetter = Some(tag -> { () => currentMailbox.get.listen(None) })
+      // Send back continuation
+      Future.successful(Seq(ser.Continuation(Some("idling"))))
+    }
+  }
+  
+  def doCallbackUpdate(update: CallbackUpdate): Unit = update match {
+    case CallbackUpdate.Exists(amount) => asyncCallback(Seq(ser.Exists(amount)))
+  }
+  
+  def endIdle(failOnNotRunning: Boolean = true): Future[Seq[ser]] = currentlyRunningIdleTagAndUnsetter match {
+    case Some((tag, unsetter)) =>
+      unsetter()
+      currentlyRunningIdleTagAndUnsetter = None
+      Future.successful(Seq(ser.Ok("IDLE terminated", Some(tag))))
+    case None if failOnNotRunning => failAndClose("Unexpected IDLE")
+    case None => Future.successful(Seq.empty)
   }
 }
 object HighLevelServerHandler {

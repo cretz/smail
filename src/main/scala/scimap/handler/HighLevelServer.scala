@@ -9,7 +9,7 @@ trait HighLevelServer {
   
   def currentMailbox: Option[Mailbox]
   
-  def listen(f: Option[ServerResponse => Unit]): Unit
+  def listen(f: Option[CallbackUpdate => Unit]): Unit
   
   def capabilities(): Future[Seq[Imap.Capability]] = Future.successful(Seq(
     Imap.Capability.Imap4Rev1,
@@ -32,7 +32,7 @@ object HighLevelServer {
   trait Folder {
     def name: String
     def children(): Future[Seq[Folder]]
-    def listen(f: Option[ServerResponse => Unit]): Unit
+    def listen(f: Option[CallbackUpdate => Unit]): Unit
   }
   
   trait Mailbox extends Folder {
@@ -64,4 +64,9 @@ object HighLevelServer {
   }
   
   case class ListItem(path: String, attrs: Seq[Imap.ListAttribute])
+  
+  sealed trait CallbackUpdate
+  object CallbackUpdate {
+    case class Exists(count: BigInt) extends CallbackUpdate
+  }
 }

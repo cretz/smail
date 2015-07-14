@@ -216,6 +216,9 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
       }
       case _ => UnexpectedArguments(allTokens)
     }
+    case "IDLE" =>
+      if (!parameters.isEmpty) UnexpectedArguments(allTokens)
+      else CommandSuccess(Idle(tag))
     case cmdName if cmdName.startsWith("X") => CommandSuccess(Extension(tag, cmdName, parameters))
     case _ => UnrecognizedCommand(allTokens)
   }

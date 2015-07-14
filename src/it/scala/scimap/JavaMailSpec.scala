@@ -111,33 +111,36 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       msg.getContent === "Test message 3000"
     }
     
-      // TODO: this
-//    "Should handle idle count update" >> { implicit ee: EE => ctx: Context =>
-//      val (testUsername, testUser) = createTestUser
-//      ctx.server.users += testUsername -> testUser
-//      ctx.server._capabilities :+= Imap.Capability.Idle
-//      ctx.daemon.start()
-//      val inbox = ctx.store.getFolder("INBOX")
-//      inbox.open(Folder.READ_WRITE)
-//      inbox.getMessages.length === 30
-//      @volatile var countEvents = Seq.empty[MessageCountEvent]
-//      inbox.addMessageCountListener(new MessageCountListener {
-//        override def messagesAdded(e: MessageCountEvent) = countEvents :+= e
-//        override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
-//      })
-//      // Put into idle to get updates
-//      inbox.asInstanceOf[IMAPFolder].idle()
-//      // Add a message
-//      testUser.mailboxes.values.head.messages :+= newMessage(3000)
-//      countEvents.size must be_==(1).eventually
-//      countEvents(0).getType === MessageCountEvent.ADDED
-//      countEvents(0).getMessages.length === 1
-//      val msg = countEvents(0).getMessages()(0)
-//      msg.getMessageNumber === 31
-//      inbox.asInstanceOf[UIDFolder].getUID(msg) === 3000
-//      msg.getSubject === "Test 3000"
-//      msg.getContent === "Test message 3000"
-//    }
+    "Should handle idle count update" >> { implicit ee: EE => ctx: Context =>
+      val (testUsername, testUser) = createTestUser
+      ctx.server.users += testUsername -> testUser
+      ctx.server._capabilities :+= Imap.Capability.Idle
+      ctx.daemon.start()
+      val inbox = ctx.store.getFolder("INBOX")
+      inbox.open(Folder.READ_WRITE)
+      inbox.getMessages.length === 30
+      @volatile var countEvents = Seq.empty[MessageCountEvent]
+      inbox.addMessageCountListener(new MessageCountListener {
+        override def messagesAdded(e: MessageCountEvent) = countEvents :+= e
+        override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
+      })
+      // Put into idle to get updates
+      Future { inbox.asInstanceOf[IMAPFolder].idle() }
+      // Wait just a bit
+      Thread.sleep(200)
+      // Add a message
+      println("ADDING MESSAGE")
+      testUser.mailboxes.values.head.addMessage(newMessage(3000))
+      println("ADDED")
+      countEvents.size must be_==(1).eventually
+      countEvents(0).getType === MessageCountEvent.ADDED
+      countEvents(0).getMessages.length === 1
+      val msg = countEvents(0).getMessages()(0)
+      msg.getMessageNumber === 31
+      inbox.asInstanceOf[UIDFolder].getUID(msg) === 3000
+      msg.getSubject === "Test 3000"
+      msg.getContent === "Test message 3000"
+    }
 
     "Should be able to handle TLS" >> { ctx: Context =>
       ctx.useTls()
