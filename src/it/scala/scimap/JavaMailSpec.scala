@@ -23,6 +23,7 @@ import org.specs2.concurrent.ExecutionEnv
 import javax.mail.UIDFolder
 import com.sun.mail.imap.IMAPFolder
 import scimap.handler.InMemoryServer.InMemoryMailbox
+import javax.mail.internet.MimeMessage
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
@@ -181,6 +182,41 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       // Now recursively delete from the top
       topFolder.delete(true)
       topFolder.exists() === false
+    }
+
+    "Should be able to subscribe, unsubscribe, and list subscribed" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      ctx.store.getFolder("/NewTestSubMailbox").create(Folder.HOLDS_MESSAGES) === true
+      ctx.store.getFolder("/NewTestSubMailbox").isSubscribed() === false
+      ctx.store.getFolder("/NewTestSubMailbox").setSubscribed(true)
+      ctx.store.getFolder("/NewTestSubMailbox").isSubscribed() === true
+      ctx.store.getFolder("/NewTestSubMailbox").setSubscribed(false)
+      ctx.store.getFolder("/NewTestSubMailbox").isSubscribed() === false
+    }
+
+    "Should be able to fetch a status value" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      ctx.store.getFolder("/INBOX").asInstanceOf[IMAPFolder].getStatusItem("MESSAGES") === 30
+    }
+
+    "Should be able to append messages" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      val folder = ctx.store.getFolder("/INBOX")
+      folder.getMessageCount === 30
+      // Add one w/ a subject
+      val msg = new MimeMessage(ctx.session)
+      msg.setSubject("Append Test")
+      msg.setText("Append Test Body\r\nAnd more info")
+      folder.appendMessages(Array(msg))
+      val updatedFolder = ctx.store.getFolder("/INBOX")
+      updatedFolder.getMessageCount === 31
+      updatedFolder.open(Folder.READ_ONLY)
+      val last = updatedFolder.getMessages.last
+      last.getSubject === "Append Test"
+      last.getContent === "Append Test Body\r\nAnd more info"
     }
   }
   

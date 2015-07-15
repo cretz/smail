@@ -6,6 +6,7 @@ import scimap.Imap.BodyStructureSingleExtension
 import scala.concurrent.Future
 import scala.util.matching.Regex
 import java.util.regex.Pattern
+import scala.util.Try
 
 // Basically only for testing
 class InMemoryServer extends HighLevelServer {
@@ -42,12 +43,23 @@ class InMemoryServer extends HighLevelServer {
         Future.successful(false)
     }
   
+  def getFolder(name: String): Option[InMemoryFolder] = {
+    val pieces = name.stripPrefix(hierarchyDelimiter.get).
+      stripSuffix(hierarchyDelimiter.get).split(hierarchyDelimiter.get)
+    pieces.tail.foldLeft(currentUser.get.folders.get(pieces.head)) {
+      case (None, _) => None
+      case (Some(parent), childName) => parent._children.find(_.name == childName)
+    }
+  }
+  
+  def get(mailbox: String): Future[Option[Mailbox]] =
+    Future.successful(getFolder(mailbox).filter(_.isInstanceOf[Mailbox]).map(_.asInstanceOf[Mailbox]))
+  
   def select(mailbox: String, readOnly: Boolean): Future[Option[Mailbox]] =
-    Future.successful(currentUser.flatMap(_.folders.get(mailbox)).collect {
-      case ret: InMemoryMailbox =>
-        currentMailbox = Some(ret)
-        currentMailboxReadOnly = readOnly
-        ret
+    Future.successful(get(mailbox).value.get.get.map { mailbox =>
+      currentMailbox = Some(mailbox.asInstanceOf[InMemoryMailbox])
+      currentMailboxReadOnly = readOnly
+      mailbox
     })
     
   def create(name: String): Future[Option[String]] = {
@@ -62,9 +74,15 @@ class InMemoryServer extends HighLevelServer {
     // If it ends with the separator, it's just a folder, otherwise it's a mailbox
     val isFolder = name.endsWith(hierarchyDelimiter.get)
     // Trim it and split it across the delimiter
-    val pieces = name.stripSuffix(hierarchyDelimiter.get).split(hierarchyDelimiter.get)
+    val pieces = name.stripSuffix(hierarchyDelimiter.get).
+      stripPrefix(hierarchyDelimiter.get).split(hierarchyDelimiter.get)
     // Set the name on the item
     item.name = pieces.last
+    // If there is only one item, it is top level
+    if (pieces.length == 1) {
+      currentUser.get.folders += item.name -> item
+      return None
+    }
     // Create all needed parents to satisfy this
     val parent = pieces.dropRight(1).foldLeft(Option.empty[InMemoryFolder])({ case (parent, name) =>
       Some(parent.flatMap(_._children.find(_.name == name)).getOrElse {
@@ -129,6 +147,20 @@ class InMemoryServer extends HighLevelServer {
     Future.successful(err)
   }
   
+  def subscribe(name: String): Future[Boolean] = {
+    // We know about the race conditions here but we don't care in a test server
+    val prevSize = currentUser.get.subscribed.size
+    currentUser.get.subscribed += name
+    Future.successful(prevSize != currentUser.get.subscribed.size)
+  }
+  
+  def unsubscribe(name: String): Future[Boolean] = {
+    // We know about the race conditions here but we don't care in a test server
+    val prevSize = currentUser.get.subscribed.size
+    currentUser.get.subscribed -= name
+    Future.successful(prevSize != currentUser.get.subscribed.size)
+  }
+  
   def allFolderNames(
     prefix: String = "",
     folders: Iterable[InMemoryFolder] = currentUser.get.folders.values
@@ -139,11 +171,15 @@ class InMemoryServer extends HighLevelServer {
     }).toMap
   }
   
-  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean): Future[Seq[ListItem]] = {
+  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean, subscribedOnly: Boolean): Future[Seq[ListItem]] = {
     // TODO: For now we just regex. Obviously this could be improved.
     val allFolders =
-      if (startsAtRoot || currentMailbox.isEmpty) allFolderNames("", currentUser.get.folders.values)
+      // TODO: LSUB technically can return values that are deleted...but we don't allow that here
+      if (subscribedOnly) {
+        allFolderNames("", currentUser.get.folders.values).filterKeys(currentUser.get.subscribed.contains)
+      } else if (startsAtRoot || currentMailbox.isEmpty) allFolderNames("", currentUser.get.folders.values)
       else allFolderNames("", Iterable(currentMailbox.get))
+    
     // Go over each token set fetching
     val regexString = tokens.foldLeft(Pattern.quote(hierarchyDelimiter.get)) { case (regex, token) =>
       regex + (token match {
@@ -182,7 +218,10 @@ object InMemoryServer {
     @volatile var username: String,
     @volatile var password: String,
     @volatile var folders: Map[String, InMemoryFolder]
-  )
+  ) {
+    @volatile
+    var subscribed = Set.empty[String]
+  }
   
   class InMemoryFolder(
     @volatile var name: String,
@@ -218,6 +257,34 @@ object InMemoryServer {
         lifted(i.toInt - 1).getOrElse(return Future.successful(None))
       }
       Future.successful(Some(msgs))
+    }
+    
+    def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]] = {
+      // Too keep this test server simple we're just gonna get all headers until first blank line...
+      //  no multipart support for now
+      val headersAndBody = message.split("\r\n\r\n", 2)
+      if (headersAndBody.length != 2) return Future.successful(Some("Can't find headers and body"))
+      // Parse headers (only the ones we can for now)
+      val headers: Seq[(MailHeaders.Type[Any], Any)] = (headersAndBody(0).split("\r\n").flatMap { header =>
+        val colonIndex = header.indexOf(":")
+        if (colonIndex == -1) None
+        else MailHeaders.typeFromString(header.substring(0, colonIndex)).flatMap { typ =>
+          val t = Try(typ.valueFromString(header.substring(colonIndex + 1)))
+          Try(typ.valueFromString(header.substring(colonIndex + 1).trim)).toOption.map { v =>
+            typ.asInstanceOf[MailHeaders.Type[Any]] -> v
+          }
+        }
+      })
+      // Add message w/ body, flags, and overridden date
+      addMessage(
+        new InMemoryMessage(
+          uid = nextUid,
+          flags = flags,
+          headers = headers.foldLeft(MailHeaders.InMemory())(_ + _) + (MailHeaders.Date -> date),
+          body = headersAndBody(1)
+        )
+      )
+      Future.successful(None)
     }
     
     def addMessage(msg: InMemoryMessage): Unit = {

@@ -24,7 +24,27 @@ class ImapTokenParserSpec extends SpecificationWithJUnit {
     "Should parse simple list request" >> {
       val parser = new ImapTokenParser("A2 LIST \"\" \"%\"")
       parser.Tokens.run() must beSuccessfulTry.withValue(Seq(Str("A2"), Str("LIST"), Str("", true), Str("%", true)))
-      1 === 1
+    }
+    
+    "Should parse str count prefix" >> {
+      val parser = new ImapTokenParser("A4 APPEND /INBOX () {183}")
+      parser.Tokens.run() must beSuccessfulTry.withValue(
+        Seq(Str("A4"), Str("APPEND"), Str("/INBOX"), List('(', Seq()), StrCountPrefix(183))
+      )
+    }
+    
+    "Should parse raw str" >> {
+      val str =
+        "Message-ID: <1616438581.0.1436994826170@TESTS>\r\n" +
+        "Subject: Append Test\r\n" +
+        "MIME-Version: 1.0\r\n" +
+        "Content-Type: text/plain; charset=us-ascii\r\n" +
+        "Content-Transfer-Encoding: 7bit\r\n" +
+        "\r\n" +
+        "Append Test Body\r\n" +
+        "And more info"
+      val parser = new ImapTokenParser("{199}\r\n" + str)
+      parser.Tokens.run() must beSuccessfulTry.withValue(Seq(Str(str)))
     }
   }
 }

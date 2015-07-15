@@ -24,6 +24,8 @@ import akka.stream.io.SessionBytes
 import scimap.handler.TlsStatefulWrapperStage.Outbound
 import scimap.handler.TlsStatefulWrapperStage.OutboundResult
 import akka.stream.FlowShape
+import akka.stream.ActorAttributes
+import akka.stream.Supervision
 
 case class FlowBuilder(
   debug: Boolean,

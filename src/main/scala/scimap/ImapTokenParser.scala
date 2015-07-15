@@ -20,9 +20,11 @@ class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding
   
   def QuotedChar = rule { ("\\\\" | "\\\"" | (!ch('"') ~ ANY)) ~ appendSB }
   
-  def CountPrefixedStr = rule {
-    '{' ~ capture(oneOrMore(CharPredicate.Digit)) ~ '}' ~ valueStack.pop.toString.toInt.times(ANY) ~>
-      (ImapToken.Str(_))
+  def CountPrefixedStr: Rule1[ImapToken.Str] = rule {
+    CountPrefix ~
+      str("\r\n") ~
+      capture(run((prefix: ImapToken.StrCountPrefix) => rule { prefix.amount.times(ANY) })) ~>
+      (ImapToken.Str(_: String))
   }
   
   def CountPrefix = rule {

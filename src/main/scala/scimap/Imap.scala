@@ -170,6 +170,8 @@ object Imap {
       if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
       else '[' + result + ']'
     }
+    
+    def fromString(string: String): Option[MailAddress] = ???
   }
 
   case class MailboxAddress(
@@ -181,6 +183,10 @@ object Imap {
       displayName.map(MailAddress.safeString).map('[' + _ + "] <" + addr + '>').getOrElse(addr)
     }
   }
+  object MailboxAddress {
+    def fromString(string: String): Option[MailboxAddress] = ???
+  }
+  
   case class GroupAddress(
     displayName: String,
     mailboxes: Seq[MailboxAddress]

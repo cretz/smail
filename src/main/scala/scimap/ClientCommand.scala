@@ -54,7 +54,7 @@ object ClientCommand {
   case class Append(
     tag: String,
     mailbox: String,
-    message: String, 
+    message: String,
     flags: Seq[Imap.Flag] = Seq.empty,
     date: Option[ZonedDateTime] = None
   ) extends ClientCommand with AuthenticatedState

@@ -1,6 +1,7 @@
 package scimap
 
 import java.time.ZonedDateTime
+import scala.reflect.runtime.universe._
 
 trait MailHeaders {
   import MailHeaders._
@@ -30,13 +31,14 @@ object MailHeaders {
   
   private var types = Map.empty[String, Type[_]]
   private def registerType[U <: Type[_]](typ: U): U = {
-    require(!types.contains(typ.name), "Type already exists")
-    types += typ.name -> typ
+    val cased = typ.name.toUpperCase
+    require(!types.contains(cased), "Type already exists")
+    types += cased -> typ
     typ
   }
   def typeFromString[_](str: String): Option[Type[_]] = types.get(str.toUpperCase)
 
-  class Type[T] private[scimap] (val name: String) {
+  class Type[T : TypeTag] private[scimap] (val name: String) {
     val delimiter = ","
 
     protected def anyValueToString(v: Any): Option[String] = v match {
@@ -52,21 +54,42 @@ object MailHeaders {
     def valueToString(v: T): Seq[String] = anyValueToString(v).toSeq
 
     def toLines(v: T): Seq[String] = valueToString(v).map(name + ": " + _)
+    
+    def valueFromString(v: String): T = {
+      val ret = typeOf[T] match {
+        case t if t =:= typeOf[ZonedDateTime] => ZonedDateTime.parse(v, Imap.mailDateTimeFormat)
+        case t if t =:= typeOf[(String, String)] =>
+          val index = v.indexOf(delimiter)
+          require(index != -1)
+          v.take(index) -> v.drop(index + 1)
+        case t if t =:= typeOf[Imap.MailboxAddress] =>
+          Imap.MailboxAddress.fromString(v)
+        case t if t =:= typeOf[Imap.MailAddress] =>
+          Imap.MailAddress.fromString(v)
+        case t if t =:= typeOf[Seq[_]] =>
+          if (v.isEmpty) Seq()
+          else v.split(delimiter).map(valueFromString)
+        case t if t =:= typeOf[String] =>
+          v
+        case t => sys.error("Unrecognized type: " + t)
+      }
+      ret.asInstanceOf[T]
+    }
   }
   object Type {
-    def apply[T](name: String): Type[T] = registerType { new Type[T](name) }
-    def apply[T](name: String, valToStr: T => Seq[String]): Type[T] = registerType {
+    def apply[T : TypeTag](name: String): Type[T] = registerType { new Type[T](name) }
+    def apply[T : TypeTag](name: String, valToStr: T => Seq[String]): Type[T] = registerType {
       new Type[T](name) {
         override def valueToString(v: T) = valToStr(v)
       }
     }
   }
 
-  class SeqType[T] private[scimap] (private val nme: String) extends Type[Seq[T]](nme) {
+  class SeqType[T : TypeTag] private[scimap] (private val nme: String) extends Type[Seq[T]](nme) {
     override def valueToString(v: Seq[T]): Seq[String] = v.flatMap(anyValueToString(_).toSeq)
   }
   object SeqType {
-    def apply[T](name: String): SeqType[T] = registerType { new SeqType[T](name) }
+    def apply[T : TypeTag](name: String): SeqType[T] = registerType { new SeqType[T](name) }
   }
   
   val ReturnPath = Type[String]("Return-Path")

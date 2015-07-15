@@ -17,15 +17,19 @@ trait HighLevelServer {
     Imap.Capability.AuthPlain
   ))
   
+  def get(mailbox: String): Future[Option[Mailbox]]
+  
   def authenticatePlain(username: String, password: String): Future[Boolean]
   def select(mailbox: String, readOnly: Boolean): Future[Option[Mailbox]]
   def create(name: String): Future[Option[String]]
   def delete(name: String): Future[Option[String]]
   def rename(oldName: String, newName: String): Future[Option[String]]
+  def subscribe(name: String): Future[Boolean]
+  def unsubscribe(name: String): Future[Boolean]
   
   def hierarchyDelimiter: Option[String] = Some("/")
   def hierarchyRoots: Seq[String] = Seq("/", "~")
-  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean): Future[Seq[ListItem]]
+  def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean, subscribedOnly: Boolean): Future[Seq[ListItem]]
   
   def flushCurrentMailboxDeleted(): Future[Unit]
   def closeCurrentMailbox(): Future[Unit]
@@ -47,6 +51,7 @@ object HighLevelServer {
     def uidValidity: BigInt
     def nextUid: BigInt
     
+    def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]]
     def getMessages(start: BigInt, end: BigInt): Future[Option[Seq[Message]]]
   }
   

@@ -48,6 +48,7 @@ trait StringToTokenSet extends (String => Seq[Seq[ImapToken]]) {
       case token: ImapToken.StrCountPrefix =>
         // Count prefix means we stop all processing right now because a regular
         //  Str would have happened if the string came with it
+        leftover :+= token
         return (ret :+ leftover) -> Seq.empty[ImapToken]
       case token => leftover :+= token
     }

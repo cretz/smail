@@ -7,6 +7,7 @@ import java.util.regex.Pattern
 import scala.annotation.tailrec
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext
+import java.time.ZonedDateTime
 
 class HighLevelServerHandler(val server: HighLevelServer)
     (implicit val execCtx: ExecutionContext) extends ServerHandler {
@@ -38,6 +39,9 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }
     // Match other situations
     (state, res) match {
+      // If we are waiting on text, go ahead and accept it w/ a continuation...
+      case (_, Some(cli.WaitingForMoreText(_))) =>
+        Future.successful(Seq(ser.Continuation(Some("Ready for additional command text"))))
       case (State.Started, None) =>
         handleFirstConnect()
       case (State.Started, _) =>
@@ -67,10 +71,20 @@ class HighLevelServerHandler(val server: HighLevelServer)
         handleDelete(tag, mailbox)
       case (_, Some(cli.CommandSuccess(cli.Rename(tag, oldName, newName)))) =>
         handleRename(tag, oldName, newName)
+      case (_, Some(cli.CommandSuccess(cli.Subscribe(tag, name)))) =>
+        handleSubscribe(tag, name)
+      case (_, Some(cli.CommandSuccess(cli.Unsubscribe(tag, name)))) =>
+        handleUnsubscribe(tag, name)
       case (_, Some(cli.CommandSuccess(cli.Noop(tag)))) =>
         handleNoop(tag)
       case (_, Some(cli.CommandSuccess(cli.List(tag, reference, mailbox)))) =>
-        handleList(tag, reference, mailbox)
+        handleList(tag, reference, mailbox, false)
+      case (_, Some(cli.CommandSuccess(cli.LSub(tag, reference, mailbox)))) =>
+        handleList(tag, reference, mailbox, true)
+      case (_, Some(cli.CommandSuccess(cli.Status(tag, mailbox, dataItems)))) =>
+        handleStatus(tag, mailbox, dataItems)
+      case (_, Some(cli.CommandSuccess(cli.Append(tag, mailbox, message, flags, date)))) =>
+        handleAppend(tag, mailbox, message, flags, date)
       case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
         handleFetch(fetch)
       case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
@@ -188,6 +202,20 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }
   }
   
+  def handleSubscribe(tag: String, name: String): Future[Seq[ser]] = {
+    server.subscribe(name).map {
+      case true => Seq(ser.Ok("SUBSCRIBE completed", Some(tag)))
+      case false => Seq(ser.No("Cannot subscribe to " + name, Some(tag)))
+    }
+  }
+  
+  def handleUnsubscribe(tag: String, name: String): Future[Seq[ser]] = {
+    server.unsubscribe(name).map {
+      case true => Seq(ser.Ok("UNSUBSCRIBE completed", Some(tag)))
+      case false => Seq(ser.No("Cannot unsubscribe from " + name, Some(tag)))
+    }
+  }
+  
   def handleNoop(tag: String): Future[Seq[ser]] = {
     var responses = Seq.empty[ser]
     server.currentMailbox.foreach { res =>
@@ -216,11 +244,12 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }
   }
   
-  def handleList(tag: String, reference: String, mailbox: String): Future[Seq[ser]] = {
+  def handleList(tag: String, reference: String, mailbox: String, subscribedOnly: Boolean): Future[Seq[ser]] = {
+    val prefix = if (subscribedOnly) "LSUB" else "LIST"
     val delim = server.hierarchyDelimiter
     // If the mailbox is empty, all we need is the delimiter
     if (mailbox.isEmpty) return Future.successful(
-      Seq(ser.List("", delim, Seq(Imap.ListAttribute.NoSelect)), ser.Ok("LIST Completed", Some(tag)))
+      Seq(ser.List("", delim, Seq(Imap.ListAttribute.NoSelect)), ser.Ok(prefix + " Completed", Some(tag)))
     )
     // Break apart the pieces
     val startsAtRoot = server.hierarchyRoots.exists(s => reference.startsWith(s) || mailbox.startsWith(s))
@@ -239,8 +268,49 @@ class HighLevelServerHandler(val server: HighLevelServer)
       case (prev, next) => (prev :+ Imap.ListToken.Delimiter) ++ next
     }
     // Ask server for the list
-    server.list(tokens, startsAtRoot).map { list =>
-      list.map(i => ser.List(i.path, delim, i.attrs)) :+ ser.Ok("LIST Completed", Some(tag))
+    server.list(tokens, startsAtRoot, subscribedOnly).map { list =>
+      val vals = list.map { i =>
+        if (subscribedOnly) ser.LSub(i.path, delim, i.attrs)
+        else ser.List(i.path, delim, i.attrs)
+      }
+      vals :+ ser.Ok(prefix + " Completed", Some(tag))
+    }
+  }
+  
+  def handleStatus(tag: String, mailbox: String, dataItems: Seq[Imap.StatusDataItem]): Future[Seq[ser]] = {
+    server.get(mailbox).map {
+      case None => Seq(ser.No("Unable to find mailbox", Some(tag)))
+      case Some(box) =>
+        val info = dataItems.map { dataItem =>
+          dataItem -> (dataItem match {
+            case Imap.StatusDataItem.Messages => box.exists
+            case Imap.StatusDataItem.Recent => box.recent
+            case Imap.StatusDataItem.UidNext => box.nextUid
+            case Imap.StatusDataItem.UidValidity => box.uidValidity
+            case Imap.StatusDataItem.Unseen => box.firstUnseen
+          })
+        }
+        Seq(ser.Status(mailbox, info), ser.Ok("STATUS completed", Some(tag)))
+    }
+  }
+  
+  def handleAppend(
+    tag: String,
+    mailbox: String,
+    message: String,
+    flags: Seq[Imap.Flag],
+    date: Option[ZonedDateTime]
+  ): Future[Seq[ser]] = {
+    server.get(mailbox).flatMap {
+      case None =>
+        Future.successful(
+          Seq(ser.No("Mailbox " + mailbox + " does not exist", Some(tag), Some(ser.StatusResponseCode.TryCreate)))
+        )
+      case Some(mailbox) =>
+        mailbox.addMessage(message, flags.toSet, date.getOrElse(ZonedDateTime.now())).map {
+          case None => Seq(ser.Ok("APPEND completed", Some(tag)))
+          case Some(err) => Seq(ser.No("APPEND error: " + err, Some(tag)))
+        }
     }
   }
   
