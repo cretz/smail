@@ -30,8 +30,7 @@ trait HighLevelServer {
   def hierarchyDelimiter: Option[String] = Some("/")
   def hierarchyRoots: Seq[String] = Seq("/", "~")
   def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean, subscribedOnly: Boolean): Future[Seq[ListItem]]
-  
-  def flushCurrentMailboxDeleted(): Future[Unit]
+
   def closeCurrentMailbox(): Future[Unit]
   def close(): Future[Unit]
 }
@@ -52,7 +51,10 @@ object HighLevelServer {
     def nextUid: BigInt
     
     def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]]
-    def getMessages(start: BigInt, end: BigInt): Future[Option[Seq[Message]]]
+    def getMessages(start: BigInt, end: BigInt): Future[Seq[(BigInt, Message)]]
+    def checkpoint(): Future[Unit]
+    def expunge(): Future[Seq[BigInt]]
+    def search(criteria: Seq[Imap.SearchCriterion]): Future[Seq[BigInt]]
   }
   
   trait Message {
@@ -69,6 +71,7 @@ object HighLevelServer {
     def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Future[Seq[String]]
     def getMime(part: Seq[Int]): Future[Option[String]]
     def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Future[Option[String]]
+    def alterFlags(flags: Set[Imap.Flag], operation: Imap.FlagOperation): Future[Unit]
   }
   
   case class ListItem(path: String, attrs: Seq[Imap.ListAttribute])

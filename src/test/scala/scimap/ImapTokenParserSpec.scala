@@ -46,5 +46,12 @@ class ImapTokenParserSpec extends SpecificationWithJUnit {
       val parser = new ImapTokenParser("{199}\r\n" + str)
       parser.Tokens.run() must beSuccessfulTry.withValue(Seq(Str(str)))
     }
+    
+    "Should parse flag request w/ backslash" >> {
+      val parser = new ImapTokenParser("A4 STORE 14 +FLAGS (\\Seen)\r\n")
+      parser.Tokens.run() must beSuccessfulTry.withValue(
+        Seq(Str("A4"), Str("STORE"), Str("14"), Str("+FLAGS"), List('(', Seq(Str("\\Seen"))), Newline)
+      )
+    }
   }
 }

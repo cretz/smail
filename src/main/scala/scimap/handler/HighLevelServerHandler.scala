@@ -85,10 +85,18 @@ class HighLevelServerHandler(val server: HighLevelServer)
         handleStatus(tag, mailbox, dataItems)
       case (_, Some(cli.CommandSuccess(cli.Append(tag, mailbox, message, flags, date)))) =>
         handleAppend(tag, mailbox, message, flags, date)
-      case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
-        handleFetch(fetch)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Check(tag)))) =>
+        handleCheck(tag)
       case (State.Selected, Some(cli.CommandSuccess(cli.Close(tag)))) =>
         handleClose(tag)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Expunge(tag)))) =>
+        handleExpunge(tag)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Search(tag, criteria, charset)))) =>
+        handleSearch(tag, criteria, charset)
+      case (State.Selected, Some(cli.CommandSuccess(fetch: cli.Fetch))) =>
+        handleFetch(fetch)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Store(tag, set, item)))) =>
+        handleStore(tag, set, item)
       case (_, Some(cli.CommandSuccess(cli.Idle(tag)))) =>
         beginIdle(tag)
       case v =>
@@ -314,16 +322,55 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }
   }
   
+  def handleCheck(tag: String): Future[Seq[ser]] = {
+    server.currentMailbox.map({ mailbox =>
+      mailbox.checkpoint().map(_ => Seq(ser.Ok("CHECK completed", Some(tag))))
+    }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
+  }
+  
+  def handleClose(tag: String): Future[Seq[ser]] = {
+    endIdle()
+    server.closeCurrentMailbox().map { _ =>
+      state = State.Authenticated
+      Seq(ser.Ok("CLOSE completed", Some(tag)))
+    }
+  }
+  
+  def handleExpunge(tag: String): Future[Seq[ser]] = {
+    server.currentMailbox.map({ mailbox =>
+      mailbox.expunge().map {
+        _.map(ser.Expunge(_)) :+ ser.Ok("EXPUNGE completed", Some(tag))
+      }
+    }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
+  }
+  
+  def handleSearch(tag: String, criteria: Seq[Imap.SearchCriterion], charset: Option[String]): Future[Seq[ser]] = {
+    // TODO: handle charset
+    if (charset.isDefined) return Future.successful(Seq(ser.No("Charsets not supported", Some(tag))))
+    server.currentMailbox.map({ mailbox =>
+      mailbox.search(criteria).map {
+        case Seq() => Seq(ser.Ok("SEARCH completed", Some(tag)))
+        case ids => Seq(ser.Search(ids), ser.Ok("SEARCH completed", Some(tag)))
+      }
+    }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
+  }
+  
+  def getMessagesFromSequenceSet(mailbox: Mailbox, set: Imap.SequenceSet): Future[Seq[(BigInt, Message)]] = {
+    val ranges = set.items.map {
+      case num: Imap.SequenceNumber => num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
+      case Imap.SequenceRange(low, high) => low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
+    }
+    val msgFutures = Util.bigIntGaps(ranges).map { range =>
+      val end = range._2.getOrElse(mailbox.exists)
+      mailbox.getMessages(range._1, end)
+    }
+    Future.sequence(msgFutures.toSeq).map(_.flatten)
+  }
+  
   def handleFetch(fetch: cli.Fetch): Future[Seq[ser]] = {
     val mailbox = server.currentMailbox.getOrElse(
       return Future.successful(Seq(ser.Bad("No mailbox selected", Some(fetch.tag))))
     )
-    
-    // Get proper sequences to fetch
-    val ranges = fetch.set.items.map {
-      case num: Imap.SequenceNumber => num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
-      case Imap.SequenceRange(low, high) => low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
-    }
     
     // Get the real items we are being asked for
     val items = fetch.dataItems match {
@@ -339,43 +386,37 @@ class HighLevelServerHandler(val server: HighLevelServer)
       case Right(seq) => seq
     }
     
-    // Go over each range and ask for messages (right side of either is failure)
-    // TODO: This needs to be streaming/lazy, not chunked
-    type GetMessageResult = Either[Seq[(BigInt, Message)], String]
-    val msgFutures: Set[Future[GetMessageResult]] = Util.bigIntGaps(ranges).map { range =>
-      val end = range._2.getOrElse(mailbox.exists)
-      mailbox.getMessages(range._1, end).map {
-        // Any none means error
-        // TODO: find a way to make this short-circuit the other work
-        case None =>
-          Right("Unable to read message")
-        case Some(newMsgs) if newMsgs.size != (end - range._1 + 1).toInt =>
-          Right("Unable to find all messages")
-        case Some(newMsgs) =>
-          Left((range._1 to end).zip(newMsgs))
-      }
+    val msgFutures = getMessagesFromSequenceSet(mailbox, fetch.set)
+    val itemFutures = msgFutures.flatMap { msgs =>
+     Future.sequence(msgs.map { case (seq, msg) =>
+       messageToFetchItems(msg, items).map(seq -> _)
+     })
     }
-    
-    // Fold them all into one set (left is ok, right is bad)
-    type AllMessagesResult = Either[Future[Seq[ser]], Seq[ser]]
-    val msgs = Future.fold(msgFutures)(Left(Future.successful(Seq.empty[ser])): AllMessagesResult) {
-      // Failure (right side) means do nothing else
-      case (r @ Right(_), _) => r
-      case (_, Right(err)) => Right(Seq(ser.Bad(err, Some(fetch.tag))))
-      case (Left(futureSeq), Left(msgs)) =>
-        val thisSet = Future.sequence(msgs.map { case (seq, msg) =>
-          messageToFetchItems(msg, items).map { fetchItems =>
-            if (fetchItems.isEmpty) Seq.empty else Seq(ser.Fetch(seq, fetchItems))
+    itemFutures.map { msgItems =>
+      msgItems.flatMap({
+        case (_, Seq()) => None
+        case (seq, items) => Some(ser.Fetch(seq, items))
+      }) :+ ser.Ok("FETCH completed", Some(fetch.tag))
+    }
+  }
+  
+  def handleStore(tag: String, set: Imap.SequenceSet, dataItem: cli.StoreDataItem): Future[Seq[ser]] = {
+    val mailbox = server.currentMailbox.getOrElse(
+      return Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag))))
+    )
+    val msgFutures = getMessagesFromSequenceSet(mailbox, set)
+    val responses = msgFutures.flatMap { msgs =>
+      Future.sequence(msgs.map { case (seq, msg) =>
+        msg.alterFlags(dataItem.flags.toSet, dataItem.operation).flatMap { _ =>
+          if (dataItem.silent) Future.successful(None)
+          else messageToFetchItems(msg, Seq(cli.FetchDataItem.Flags)).map {
+            case Seq() => None
+            case items => Some(ser.Fetch(seq, items))
           }
-        }).map(_.flatten)
-        Left(futureSeq.flatMap(seq => thisSet.map(seq ++ _)))
+        }
+      }).map(_.flatten)
     }
-    
-    msgs.flatMap {
-      case Right(badSeq) => Future.successful(badSeq)
-      case Left(goodFutureSeqs) =>
-        goodFutureSeqs.map(_ :+ ser.Ok("FETCH completed", Some(fetch.tag)))
-    }
+    responses.map(s => s :+ ser.Ok("STORE completed", Some(tag)))
   }
   
   def messageToFetchItems(msg: Message, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {
@@ -537,16 +578,6 @@ class HighLevelServerHandler(val server: HighLevelServer)
       case Imap.GroupAddress(display, mailboxes) =>
         List('(', Str(display, true) +:
           mailboxes.map(mailAddressToImapToken) :+ List('(', Seq(Str(display, true), Nil, Nil, Nil)))
-    }
-  }
-  
-  def handleClose(tag: String): Future[Seq[ser]] = {
-    endIdle()
-    server.flushCurrentMailboxDeleted().flatMap { _ =>
-      server.closeCurrentMailbox().map { _ =>
-        state = State.Authenticated
-        Seq(ser.Ok("CLOSE completed", Some(tag)))
-      }
     }
   }
   

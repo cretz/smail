@@ -205,9 +205,10 @@ class InMemoryServer extends HighLevelServer {
     }).toSeq)
   }
   
-  def flushCurrentMailboxDeleted(): Future[Unit] = Future.successful(currentMailbox.foreach(_.flushDeleted()))
-  
-  def closeCurrentMailbox(): Future[Unit] = Future.successful(currentMailbox = None)
+  def closeCurrentMailbox(): Future[Unit] = {
+    if (currentMailboxReadOnly) currentMailbox.get.expunge()
+    Future.successful(currentMailbox = None)
+  }
   
   def close(): Future[Unit] = Future.successful(())
 }
@@ -231,7 +232,7 @@ object InMemoryServer {
     var listenCallback = Option.empty[CallbackUpdate => Unit]
     def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
     
-    override def children(): Future[Seq[Folder]] = Future.successful(_children)
+    def children(): Future[Seq[Folder]] = Future.successful(_children)
     
     def hasMailboxChild(): Boolean = _children.exists { child =>
       child.isInstanceOf[InMemoryMailbox] || child.hasMailboxChild()
@@ -251,12 +252,12 @@ object InMemoryServer {
     def firstUnseen = messages.find(!_.flags.contains(Imap.Flag.Seen)).map(_.uid).getOrElse(0)
     def nextUid = messages.foldLeft(BigInt(0)){ case (max, msg) => max.max(msg.uid) } + 1
     
-    def getMessages(start: BigInt, end: BigInt): Future[Option[Seq[Message]]] = {
+    def getMessages(start: BigInt, end: BigInt): Future[Seq[(BigInt, Message)]] = {
       val lifted = messages.lift
       val msgs = for (i <- start to end) yield {
-        lifted(i.toInt - 1).getOrElse(return Future.successful(None))
+        i -> lifted(i.toInt - 1).getOrElse(return Future.successful(Seq.empty))
       }
-      Future.successful(Some(msgs))
+      Future.successful(msgs)
     }
     
     def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]] = {
@@ -292,7 +293,81 @@ object InMemoryServer {
       listenCallback.foreach(_(CallbackUpdate.Exists(exists)))
     }
     
-    def flushDeleted(): Unit = messages = messages.filterNot(_.flags.contains(Imap.Flag.Deleted))
+    def checkpoint(): Future[Unit] = {
+      // Noop
+      Future.successful(())
+    }
+    
+    def expunge(): Future[Seq[BigInt]] = {
+      val (removed, newSet) = messages.partition(_.flags.contains(Imap.Flag.Deleted))
+      messages = newSet
+      Future.successful(removed.map(_.uid))
+    }
+    
+    def search(criteria: Seq[Imap.SearchCriterion]): Future[Seq[BigInt]] = {
+      val filters = criteria.map(criterionToFilter)
+      Future.successful(messages.filterNot(msg => filters.exists(!_(msg))).map(_.uid))
+    }
+    
+    def criterionToFilter(criterion: Imap.SearchCriterion): (InMemoryMessage) => Boolean = {
+      import Imap.SearchCriterion._
+      criterion match {
+        case SequenceSet(set) => msg => set.contains(msg.uid)
+        case All => _ => true
+        case Answered => _.flags.contains(Imap.Flag.Answered)
+        case Bcc(bcc) =>
+          _.headers(MailHeaders.Bcc).map(_.exists(_.toString.contains(bcc))).getOrElse(false)
+        case Before(date) => _.internalDate.toLocalDate.isBefore(date)
+        case Body(str) => _.body.contains(str)
+        case Cc(cc) =>
+          _.headers(MailHeaders.Cc).map(_.exists(_.toString.contains(cc))).getOrElse(false)
+        case Deleted => _.flags.contains(Imap.Flag.Deleted)
+        case Draft => _.flags.contains(Imap.Flag.Draft)
+        case Flagged => _.flags.contains(Imap.Flag.Flagged)
+        case From(from) =>
+          _.headers(MailHeaders.From).map(_.exists(_.toString.contains(from))).getOrElse(false)
+        case Header(name, v) =>
+          msg => MailHeaders.typeFromString(name).flatMap(typ =>
+            msg.headers(typ).map(typ.asInstanceOf[MailHeaders.Type[Any]].valueToString).
+              map(_.exists(_.contains(v)))
+          ).getOrElse(false)
+        case Keyword(flag) => _.flags.contains(flag)
+        case Larger(size) => _.size > size
+        case New => msg => msg.flags.contains(Imap.Flag.Recent) && !msg.flags.contains(Imap.Flag.Seen)
+        case Not(crit) =>
+          val filter = criterionToFilter(crit)
+          !filter(_)
+        case Old => !_.flags.contains(Imap.Flag.Recent)
+        case On(date) => _.internalDate.toLocalDate.equals(date)
+        case Or(crit1, crit2) =>
+          val filter1 = criterionToFilter(crit1)
+          val filter2 = criterionToFilter(crit2)
+          msg => filter1(msg) || filter2(msg)
+        case Recent => _.flags.contains(Imap.Flag.Recent)
+        case Seen => _.flags.contains(Imap.Flag.Seen)
+        case SentBefore(date) =>
+          _.headers(MailHeaders.Date).map(_.toLocalDate.isBefore(date)).getOrElse(false)
+        case SentOn(date) =>
+          _.headers(MailHeaders.Date).map(_.toLocalDate.equals(date)).getOrElse(false)
+        case SentSince(date) =>
+          _.headers(MailHeaders.Date).map(!_.toLocalDate.isBefore(date)).getOrElse(false)
+        case Since(date) => !_.internalDate.toLocalDate.isBefore(date)
+        case Smaller(size) => _.size < size
+        case Subject(str) =>
+          _.headers(MailHeaders.Subject).map(_.contains(str)).getOrElse(false)
+        case Text(str) =>
+          msg => msg.body.contains(str) || msg.headers.toString.contains(str)
+        case To(to) =>
+          _.headers(MailHeaders.To).map(_.exists(_.toString.contains(to))).getOrElse(false)
+        case Uid(set) => msg => set.contains(msg.uid)
+        case Unanswered => !_.flags.contains(Imap.Flag.Answered)
+        case Undeleted => !_.flags.contains(Imap.Flag.Deleted)
+        case Undraft => !_.flags.contains(Imap.Flag.Draft)
+        case Unflagged => !_.flags.contains(Imap.Flag.Flagged)
+        case Unkeyword(flag) => !_.flags.contains(flag)
+        case Unseen => !_.flags.contains(Imap.Flag.Seen)
+      }
+    }
   }
   
   class InMemoryMessage(
@@ -357,5 +432,14 @@ object InMemoryServer {
       else Future.successful(
         Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
       )
+      
+    def alterFlags(flags: Set[Imap.Flag], operation: Imap.FlagOperation): Future[Unit] = {
+      operation match {
+        case Imap.FlagOperation.Replace => this.flags = flags
+        case Imap.FlagOperation.Add => this.flags ++= flags
+        case Imap.FlagOperation.Remove => this.flags --= flags
+      }
+      Future.successful(())
+    }
   }
 }

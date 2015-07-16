@@ -65,49 +65,9 @@ object ClientCommand {
   
   case class Search(
     tag: String,
-    criteria: Seq[SearchCriteria],
+    criteria: Seq[Imap.SearchCriterion],
     charset: Option[String] = None
   ) extends ClientCommand with SelectedState
-  
-  sealed trait SearchCriteria
-  object SearchCriteria {
-    case class SequenceSet(set: Imap.SequenceSet) extends SearchCriteria
-    case object All extends SearchCriteria
-    case object Answered extends SearchCriteria
-    case class Bcc(string: String) extends SearchCriteria
-    case class Before(date: LocalDate) extends SearchCriteria
-    case class Body(string: String) extends SearchCriteria
-    case class Cc(string: String) extends SearchCriteria
-    case object Deleted extends SearchCriteria
-    case object Draft extends SearchCriteria
-    case object Flagged extends SearchCriteria
-    case class From(string: String) extends SearchCriteria
-    case class Header(fieldname: String, string: String) extends SearchCriteria
-    case class Keyword(flag: Imap.Flag) extends SearchCriteria
-    case class Larger(n: Long) extends SearchCriteria
-    case object New extends SearchCriteria
-    case class Not(searchKey: SearchCriteria) extends SearchCriteria
-    case object Old extends SearchCriteria
-    case class On(date: LocalDate) extends SearchCriteria
-    case class Or(searchKey1: SearchCriteria, searchKey2: SearchCriteria) extends SearchCriteria
-    case object Recent extends SearchCriteria
-    case object Seen extends SearchCriteria
-    case class SentBefore(date: LocalDate) extends SearchCriteria
-    case class SentOn(date: LocalDate) extends SearchCriteria
-    case class SentSince(date: LocalDate) extends SearchCriteria
-    case class Since(date: LocalDate) extends SearchCriteria
-    case class Smaller(n: Long) extends SearchCriteria
-    case class Subject(string: String) extends SearchCriteria
-    case class Text(string: String) extends SearchCriteria
-    case class To(string: String) extends SearchCriteria
-    case class Uid(set: Imap.SequenceSet) extends SearchCriteria
-    case object Unanswered extends SearchCriteria
-    case object Undeleted extends SearchCriteria
-    case object Undraft extends SearchCriteria
-    case object Unflagged extends SearchCriteria
-    case class Unkeyword(flag: Imap.Flag) extends SearchCriteria
-    case object Unseen extends SearchCriteria
-  }
   
   type FetchItem = Either[FetchMacro, Seq[FetchDataItem]]
   case class Fetch(tag: String, set: Imap.SequenceSet, dataItems: FetchItem) extends ClientCommand with SelectedState
@@ -149,15 +109,7 @@ object ClientCommand {
     set: Imap.SequenceSet,
     dataItem: StoreDataItem
   ) extends ClientCommand with SelectedState
-  case class StoreDataItem(flags: Seq[Imap.Flag], operation: StoreDataItem.FlagOperation, silent: Boolean)
-  object StoreDataItem {
-    sealed trait FlagOperation
-    object FlagOperation {
-      case object Replace extends FlagOperation
-      case object Add extends FlagOperation
-      case object Remove extends FlagOperation
-    }
-  }
+  case class StoreDataItem(flags: Seq[Imap.Flag], operation: Imap.FlagOperation, silent: Boolean)
   
   case class Copy(tag: String, set: Imap.SequenceSet, mailbox: String) extends ClientCommand with SelectedState
   

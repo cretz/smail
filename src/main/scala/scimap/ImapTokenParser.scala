@@ -43,7 +43,9 @@ class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding
   
   def ListWildcards = rule { ch('%') | '*' }
   
-  def QuotedSpecials = rule { ch('"') | '\\' }
+  // This was removed because it skipped over flags like \Seen
+  // def QuotedSpecials = rule { ch('"') | ('\\' }
+  def QuotedSpecials = rule { ch('"') | "\\\"" | "\\\\" }
   
   // Note, added extra '[' because I want the list to capture it
   def RespSpecials = rule { ch('[') | ']' }

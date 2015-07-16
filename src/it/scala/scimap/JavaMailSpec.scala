@@ -24,6 +24,9 @@ import javax.mail.UIDFolder
 import com.sun.mail.imap.IMAPFolder
 import scimap.handler.InMemoryServer.InMemoryMailbox
 import javax.mail.internet.MimeMessage
+import scimap.handler.InMemoryServer.InMemoryMailbox
+import javax.mail.Flags.Flag
+import javax.mail.search.FlagTerm
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
@@ -108,6 +111,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       countEvents(0).getMessages.length === 1
       val msg = countEvents(0).getMessages()(0)
       msg.getMessageNumber === 31
+      println("TEST!!!")
       inbox.asInstanceOf[UIDFolder].getUID(msg) === 3000
       msg.getSubject === "Test 3000"
       msg.getContent === "Test message 3000"
@@ -217,6 +221,55 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       val last = updatedFolder.getMessages.last
       last.getSubject === "Append Test"
       last.getContent === "Append Test Body\r\nAnd more info"
+    }
+
+    "Should expunge deleted" >> { ctx: Context =>
+      val user = createTestUser
+      ctx.server.users += user
+      ctx.daemon.start()
+      // Let's mark messages 5 and 10 as deleted
+      val mailbox = user._2.folders.head._2.asInstanceOf[InMemoryMailbox]
+      mailbox.messages.find(_.uid == 5).get.flags = Set(Imap.Flag.Deleted)
+      mailbox.messages.find(_.uid == 12).get.flags = Set(Imap.Flag.Deleted)
+      // Confirm there are still 30
+      val folder = ctx.store.getFolder("/INBOX")
+      folder.getMessageCount === 30
+      // Expunge the two
+      folder.open(Folder.READ_WRITE)
+      val msgs = folder.expunge()
+      // Confirm expunged
+      ctx.store.getFolder("/INBOX").getMessageCount === 28
+      // Ug, stupid java mail renumbers the messages, so we have to check for 5 and 13
+      msgs.map(_.getMessageNumber).toSet === Set(5, 13)
+    }
+    
+    "Should search" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      // Let's take every message with subject containing 5 or body containing 7
+      val folder = ctx.store.getFolder("/INBOX")
+      folder.open(Folder.READ_ONLY)
+      import javax.mail.search._
+      val msgs = folder.search(new OrTerm(new SubjectTerm("5"), new BodyTerm("7")))
+      msgs.map(_.getMessageNumber).toSet === Set(5, 15, 25, 7, 17, 27)
+    }
+    
+    "Should store" >> { ctx: Context =>
+      val user = createTestUser
+      ctx.server.users += user
+      ctx.daemon.start()
+      // Add Seen to 15 through 20
+      val folder = ctx.store.getFolder("/INBOX")
+      folder.open(Folder.READ_WRITE)
+      folder.setFlags(15, 20, new Flags(Flags.Flag.SEEN), true)
+      // Ask for all seen
+      val msgs = folder.search(new FlagTerm(new Flags(Flags.Flag.SEEN), true))
+      msgs.map(_.getMessageNumber).toSet === (15 to 20).toSet
+      // Remove seen from 12 through 16 (which means really only 15 and 16)
+      folder.setFlags(12, 16, new Flags(Flags.Flag.SEEN), false)
+      val updatedMsgs = folder.search(new FlagTerm(new Flags(Flags.Flag.SEEN), true))
+      updatedMsgs.map(_.getMessageNumber).toSet === (17 to 20).toSet
+      // No way to test replace w/ java mail :-(
     }
   }
   

@@ -2,6 +2,7 @@ package scimap
 
 import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
+import java.time.LocalDate
 
 object Imap {
   //DQUOTE date-day-fixed "-" date-month "-" date-year SP time SP zone DQUOTE
@@ -11,17 +12,27 @@ object Imap {
   //RFC2822 - 3.3
   lazy val mailDateTimeFormat = DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm:ss Z")
   
-  case class SequenceSet(items: Seq[SequenceSetItem])
-  sealed trait SequenceSetItem
-  case class SequenceRange(low: SequenceNumber, high: SequenceNumber) extends SequenceSetItem
+  case class SequenceSet(items: Seq[SequenceSetItem]) {
+    def contains(value: BigInt): Boolean = items.exists(_.contains(value))
+  }
+  sealed trait SequenceSetItem {
+    def contains(value: BigInt): Boolean
+  }
+  case class SequenceRange(low: SequenceNumber, high: SequenceNumber) extends SequenceSetItem {
+    def contains(value: BigInt): Boolean =
+      (!low.isInstanceOf[SequenceNumberLiteral] || low.asInstanceOf[SequenceNumberLiteral].value <= value) &&
+        (!high.isInstanceOf[SequenceNumberLiteral] || high.asInstanceOf[SequenceNumberLiteral].value >= value)
+  }
   sealed trait SequenceNumber extends SequenceSetItem {
     def valueOption: Option[BigInt]
   }
   case class SequenceNumberLiteral(value: BigInt) extends SequenceNumber {
     def valueOption = Some(value)
+    def contains(value: BigInt): Boolean = value == this.value
   }
   case object SequenceNumberAll extends SequenceNumber {
     def valueOption = None
+    def contains(value: BigInt): Boolean = true
   }
   
   sealed trait Flag
@@ -215,5 +226,52 @@ object Imap {
     case object Unmarked extends ListAttribute {
       override def toString = "\\Unmarked"
     }
+  }
+  
+  sealed trait SearchCriterion
+  object SearchCriterion {
+    case class SequenceSet(set: Imap.SequenceSet) extends SearchCriterion
+    case object All extends SearchCriterion
+    case object Answered extends SearchCriterion
+    case class Bcc(string: String) extends SearchCriterion
+    case class Before(date: LocalDate) extends SearchCriterion
+    case class Body(string: String) extends SearchCriterion
+    case class Cc(string: String) extends SearchCriterion
+    case object Deleted extends SearchCriterion
+    case object Draft extends SearchCriterion
+    case object Flagged extends SearchCriterion
+    case class From(string: String) extends SearchCriterion
+    case class Header(fieldname: String, string: String) extends SearchCriterion
+    case class Keyword(flag: Imap.Flag) extends SearchCriterion
+    case class Larger(n: Long) extends SearchCriterion
+    case object New extends SearchCriterion
+    case class Not(searchKey: SearchCriterion) extends SearchCriterion
+    case object Old extends SearchCriterion
+    case class On(date: LocalDate) extends SearchCriterion
+    case class Or(searchKey1: SearchCriterion, searchKey2: SearchCriterion) extends SearchCriterion
+    case object Recent extends SearchCriterion
+    case object Seen extends SearchCriterion
+    case class SentBefore(date: LocalDate) extends SearchCriterion
+    case class SentOn(date: LocalDate) extends SearchCriterion
+    case class SentSince(date: LocalDate) extends SearchCriterion
+    case class Since(date: LocalDate) extends SearchCriterion
+    case class Smaller(n: Long) extends SearchCriterion
+    case class Subject(string: String) extends SearchCriterion
+    case class Text(string: String) extends SearchCriterion
+    case class To(string: String) extends SearchCriterion
+    case class Uid(set: Imap.SequenceSet) extends SearchCriterion
+    case object Unanswered extends SearchCriterion
+    case object Undeleted extends SearchCriterion
+    case object Undraft extends SearchCriterion
+    case object Unflagged extends SearchCriterion
+    case class Unkeyword(flag: Imap.Flag) extends SearchCriterion
+    case object Unseen extends SearchCriterion
+  }
+  
+  sealed trait FlagOperation
+  object FlagOperation {
+    case object Replace extends FlagOperation
+    case object Add extends FlagOperation
+    case object Remove extends FlagOperation
   }
 }

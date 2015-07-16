@@ -11,6 +11,8 @@ trait MailHeaders {
   def +[T](v: (Type[T], T)): MailHeaders
   def ++[T](v: (SeqType[T], T)): MailHeaders
   def lines[T](t: Type[T]): Seq[String] = apply(t).toSeq.flatMap(t.toLines)
+  override def toString(): String =
+    headers().flatMap({ case (typ, v) => lines(typ) }).mkString("\r\n")
 }
 object MailHeaders {
   
