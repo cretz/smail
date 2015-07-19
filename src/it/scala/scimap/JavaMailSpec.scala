@@ -27,6 +27,7 @@ import javax.mail.internet.MimeMessage
 import scimap.handler.InMemoryServer.InMemoryMailbox
 import javax.mail.Flags.Flag
 import javax.mail.search.FlagTerm
+import scimap.handler.HighLevelServer
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
@@ -120,7 +121,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     "Should handle idle count update" >> { implicit ee: EE => ctx: Context =>
       val (testUsername, testUser) = createTestUser
       ctx.server.users += testUsername -> testUser
-      ctx.server._capabilities :+= Imap.Capability.Idle
+      ctx.server._capabilities = Some(HighLevelServer.defaultCapabilities :+ Imap.Capability.Idle)
       ctx.daemon.start()
       val inbox = ctx.store.getFolder("INBOX")
       inbox.open(Folder.READ_WRITE)
@@ -270,6 +271,23 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       val updatedMsgs = folder.search(new FlagTerm(new Flags(Flags.Flag.SEEN), true))
       updatedMsgs.map(_.getMessageNumber).toSet === (17 to 20).toSet
       // No way to test replace w/ java mail :-(
+    }
+
+    "Should copy" >> { ctx: Context =>
+      ctx.server.users += createTestUser
+      ctx.daemon.start()
+      ctx.store.getFolder("/NewTestSubMailbox").create(Folder.HOLDS_MESSAGES) === true
+      // Make sure it has no messages at first
+      ctx.store.getFolder("/NewTestSubMailbox").getMessageCount === 0
+      // Copy over messages 7 to 11 from inbox
+      val inbox = ctx.store.getFolder("/INBOX")
+      inbox.open(Folder.READ_ONLY)
+      inbox.copyMessages(inbox.getMessages(7, 11), ctx.store.getFolder("/NewTestSubMailbox"))
+      // Now make sure it has the right messages
+      val newFolder = ctx.store.getFolder("/NewTestSubMailbox")
+      newFolder.open(Folder.READ_ONLY)
+      newFolder.getMessageCount === 5
+      newFolder.getMessages.map(_.getSubject).toSet === (7 to 11).map("Test " + _).toSet
     }
   }
   

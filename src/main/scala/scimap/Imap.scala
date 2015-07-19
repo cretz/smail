@@ -94,6 +94,9 @@ object Imap {
     case class Auth(mechanism: String) extends Capability
     val AuthPlain = Auth("PLAIN")
     case class Custom(contents: String, prefixWithX: Boolean = true) extends Capability
+    
+    // Extensions...
+    case object UidPlus extends Capability
   }
   
   // TODO: Make the body structure stuff more type safe such as special TEXT versions

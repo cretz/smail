@@ -22,17 +22,13 @@ class InMemoryServer extends HighLevelServer {
   @volatile
   var currentMailboxReadOnly = false
   @volatile
-  var _capabilities = Seq(
-    Imap.Capability.Imap4Rev1,
-    Imap.Capability.StartTls,
-    Imap.Capability.AuthPlain
-  )
+  var _capabilities = Option.empty[Seq[Imap.Capability]]
   @volatile
   var listenCallback = Option.empty[CallbackUpdate => Unit]
   
   override def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
   
-  override def capabilities() = Future.successful(_capabilities)
+  override def capabilities() = _capabilities.map(Future.successful).getOrElse(super.capabilities())
   
   def authenticatePlain(username: String, password: String): Future[Boolean] =
     users.get(username) match {
@@ -205,6 +201,21 @@ class InMemoryServer extends HighLevelServer {
     }).toSeq)
   }
   
+  def copyMessagesFromCurrent(
+    start: BigInt,
+    end: Option[BigInt],
+    toMailbox: String,
+    byUid: Boolean
+  ): Future[Option[String]] = {
+    get(toMailbox).value.get.get match {
+      case Some(newMailbox: InMemoryMailbox) =>
+        currentMailbox.get.getInMemoryMessages(start, end, byUid).map(_._2).foreach(newMailbox.addMessage)
+        Future.successful(None)
+      case _ =>
+        Future.successful(Some("Unrecognized mailbox: " + toMailbox))
+    }
+  }
+  
   def closeCurrentMailbox(): Future[Unit] = {
     if (currentMailboxReadOnly) currentMailbox.get.expunge()
     Future.successful(currentMailbox = None)
@@ -252,12 +263,25 @@ object InMemoryServer {
     def firstUnseen = messages.find(!_.flags.contains(Imap.Flag.Seen)).map(_.uid).getOrElse(0)
     def nextUid = messages.foldLeft(BigInt(0)){ case (max, msg) => max.max(msg.uid) } + 1
     
-    def getMessages(start: BigInt, end: BigInt): Future[Seq[(BigInt, Message)]] = {
-      val lifted = messages.lift
-      val msgs = for (i <- start to end) yield {
-        i -> lifted(i.toInt - 1).getOrElse(return Future.successful(Seq.empty))
+    def getInMemoryMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Seq[(BigInt, InMemoryMessage)] = {
+      var properStart = start
+      var properEnd = end
+      if (byUid) {
+        // Don't have to be contiguous here...
+        properStart = messages.indexWhere(_.uid == start) + 1
+        if (properStart == 0) return Seq.empty
+        properEnd.foreach{ end =>
+          properEnd = Some(messages.indexWhere(_.uid == end) + 1)
+          // Has to be present and >= start
+          if (properEnd.get == 0 || properEnd.get < start) return Seq.empty
+        }
       }
-      Future.successful(msgs)
+      val lifted = messages.lift
+      (start to end.getOrElse(messages.size)).flatMap(i => lifted(i.toInt - 1).map(i -> _))
+    }
+    
+    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, Message)]] = {
+      Future.successful(getInMemoryMessages(start, end, byUid))
     }
     
     def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]] = {
@@ -304,9 +328,14 @@ object InMemoryServer {
       Future.successful(removed.map(_.uid))
     }
     
-    def search(criteria: Seq[Imap.SearchCriterion]): Future[Seq[BigInt]] = {
+    def search(criteria: Seq[Imap.SearchCriterion], returnUids: Boolean): Future[Seq[BigInt]] = {
       val filters = criteria.map(criterionToFilter)
-      Future.successful(messages.filterNot(msg => filters.exists(!_(msg))).map(_.uid))
+      val msgsWithIndex = messages.zipWithIndex.filterNot(idxAndMsg => filters.exists(!_(idxAndMsg._1)))
+      Future.successful(
+        msgsWithIndex.map { case (msg, index) =>
+          if (returnUids) msg.uid else BigInt(index + 1)
+        }
+      )
     }
     
     def criterionToFilter(criterion: Imap.SearchCriterion): (InMemoryMessage) => Boolean = {

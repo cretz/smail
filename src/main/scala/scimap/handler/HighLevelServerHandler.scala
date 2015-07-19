@@ -97,6 +97,10 @@ class HighLevelServerHandler(val server: HighLevelServer)
         handleFetch(fetch)
       case (State.Selected, Some(cli.CommandSuccess(cli.Store(tag, set, item)))) =>
         handleStore(tag, set, item)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Copy(tag, set, mailbox)))) =>
+        handleCopy(tag, set, mailbox)
+      case (State.Selected, Some(cli.CommandSuccess(cli.Uid(tag, command)))) =>
+        handleUid(tag, command)
       case (_, Some(cli.CommandSuccess(cli.Idle(tag)))) =>
         beginIdle(tag)
       case v =>
@@ -344,30 +348,42 @@ class HighLevelServerHandler(val server: HighLevelServer)
     }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
   }
   
-  def handleSearch(tag: String, criteria: Seq[Imap.SearchCriterion], charset: Option[String]): Future[Seq[ser]] = {
+  def handleSearch(    
+    tag: String,
+    criteria: Seq[Imap.SearchCriterion],
+    charset: Option[String],
+    returnUids: Boolean = false
+  ): Future[Seq[ser]] = {
     // TODO: handle charset
     if (charset.isDefined) return Future.successful(Seq(ser.No("Charsets not supported", Some(tag))))
+    val prefix = if (returnUids) "UID " else ""
     server.currentMailbox.map({ mailbox =>
-      mailbox.search(criteria).map {
-        case Seq() => Seq(ser.Ok("SEARCH completed", Some(tag)))
-        case ids => Seq(ser.Search(ids), ser.Ok("SEARCH completed", Some(tag)))
+      mailbox.search(criteria, returnUids).map {
+        case Seq() => Seq(ser.Ok(prefix + "SEARCH completed", Some(tag)))
+        case ids => Seq(ser.Search(ids), ser.Ok(prefix + "SEARCH completed", Some(tag)))
       }
     }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
   }
   
-  def getMessagesFromSequenceSet(mailbox: Mailbox, set: Imap.SequenceSet): Future[Seq[(BigInt, Message)]] = {
-    val ranges = set.items.map {
+  def getRangesFromSequenceSet(set: Imap.SequenceSet): Seq[(BigInt, Option[BigInt])] = {
+    set.items.map {
       case num: Imap.SequenceNumber => num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
       case Imap.SequenceRange(low, high) => low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
     }
-    val msgFutures = Util.bigIntGaps(ranges).map { range =>
-      val end = range._2.getOrElse(mailbox.exists)
-      mailbox.getMessages(range._1, end)
+  }
+  
+  def getMessagesFromSequenceSet(
+      mailbox: Mailbox,
+      set: Imap.SequenceSet,
+      byUid: Boolean
+  ): Future[Seq[(BigInt, Message)]] = {
+    val msgFutures = getRangesFromSequenceSet(set).map { range =>
+      mailbox.getMessages(range._1, range._2, byUid)
     }
     Future.sequence(msgFutures.toSeq).map(_.flatten)
   }
   
-  def handleFetch(fetch: cli.Fetch): Future[Seq[ser]] = {
+  def handleFetch(fetch: cli.Fetch, byUid: Boolean = false): Future[Seq[ser]] = {
     val mailbox = server.currentMailbox.getOrElse(
       return Future.successful(Seq(ser.Bad("No mailbox selected", Some(fetch.tag))))
     )
@@ -386,25 +402,31 @@ class HighLevelServerHandler(val server: HighLevelServer)
       case Right(seq) => seq
     }
     
-    val msgFutures = getMessagesFromSequenceSet(mailbox, fetch.set)
+    val msgFutures = getMessagesFromSequenceSet(mailbox, fetch.set, byUid)
     val itemFutures = msgFutures.flatMap { msgs =>
      Future.sequence(msgs.map { case (seq, msg) =>
        messageToFetchItems(msg, items).map(seq -> _)
      })
     }
+    val prefix = if (byUid) "UID " else ""
     itemFutures.map { msgItems =>
       msgItems.flatMap({
         case (_, Seq()) => None
         case (seq, items) => Some(ser.Fetch(seq, items))
-      }) :+ ser.Ok("FETCH completed", Some(fetch.tag))
+      }) :+ ser.Ok(prefix + "FETCH completed", Some(fetch.tag))
     }
   }
   
-  def handleStore(tag: String, set: Imap.SequenceSet, dataItem: cli.StoreDataItem): Future[Seq[ser]] = {
+  def handleStore(
+    tag: String,
+    set: Imap.SequenceSet,
+    dataItem: cli.StoreDataItem,
+    byUid: Boolean = false
+  ): Future[Seq[ser]] = {
     val mailbox = server.currentMailbox.getOrElse(
       return Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag))))
     )
-    val msgFutures = getMessagesFromSequenceSet(mailbox, set)
+    val msgFutures = getMessagesFromSequenceSet(mailbox, set, byUid)
     val responses = msgFutures.flatMap { msgs =>
       Future.sequence(msgs.map { case (seq, msg) =>
         msg.alterFlags(dataItem.flags.toSet, dataItem.operation).flatMap { _ =>
@@ -416,7 +438,33 @@ class HighLevelServerHandler(val server: HighLevelServer)
         }
       }).map(_.flatten)
     }
-    responses.map(s => s :+ ser.Ok("STORE completed", Some(tag)))
+    val prefix = if (byUid) "UID " else ""
+    responses.map(s => s :+ ser.Ok(prefix + "STORE completed", Some(tag)))
+  }
+  
+  def handleCopy(
+    tag: String,
+    set: Imap.SequenceSet,
+    mailbox: String,
+    byUid: Boolean = false
+  ): Future[Seq[ser]] = {
+    val futures = getRangesFromSequenceSet(set).map({ range =>
+      server.copyMessagesFromCurrent(range._1, range._2, mailbox, byUid)
+    }).toSeq
+    Future.sequence(futures).map { errors =>
+      val prefix = if (byUid) "UID " else ""
+      errors.find(_.isDefined).flatten match {
+        case None => Seq(ser.Ok(prefix + "COPY completed", Some(tag)))
+        case Some(err) => Seq(ser.No(prefix + "COPY failed: " + err, Some(tag)))
+      }
+    }
+  }
+  
+  def handleUid(tag: String, command: cli.UidCommand): Future[Seq[ser]] = command match {
+    case cli.UidCommand.Copy(cli.Copy(_, set, mailbox)) => handleCopy(tag, set, mailbox, true)
+    case cli.UidCommand.Fetch(fetch) => handleFetch(fetch.copy(tag = tag), true)
+    case cli.UidCommand.Store(cli.Store(_, set, dataItem)) => handleStore(tag, set, dataItem, true)
+    case cli.UidCommand.Search(cli.Search(_, criteria, charset)) => handleSearch(tag, criteria, charset, true)
   }
   
   def messageToFetchItems(msg: Message, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {

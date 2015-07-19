@@ -118,6 +118,8 @@ trait ServerResponseToString extends (ServerResponse => String) {
       case Auth(mechanism) => s"AUTH=$mechanism"
       case Custom(contents, true) => s"X$contents"
       case Custom(contents, false) => contents
+      // Extensions
+      case UidPlus => "UIDPLUS"
     }
   }
   

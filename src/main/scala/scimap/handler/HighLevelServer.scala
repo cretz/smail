@@ -11,11 +11,7 @@ trait HighLevelServer {
   
   def listen(f: Option[CallbackUpdate => Unit]): Unit
   
-  def capabilities(): Future[Seq[Imap.Capability]] = Future.successful(Seq(
-    Imap.Capability.Imap4Rev1,
-    Imap.Capability.StartTls,
-    Imap.Capability.AuthPlain
-  ))
+  def capabilities(): Future[Seq[Imap.Capability]] = Future.successful(defaultCapabilities)
   
   def get(mailbox: String): Future[Option[Mailbox]]
   
@@ -30,11 +26,24 @@ trait HighLevelServer {
   def hierarchyDelimiter: Option[String] = Some("/")
   def hierarchyRoots: Seq[String] = Seq("/", "~")
   def list(tokens: Seq[Imap.ListToken], startsAtRoot: Boolean, subscribedOnly: Boolean): Future[Seq[ListItem]]
+  
+  def copyMessagesFromCurrent(
+    start: BigInt,
+    end: Option[BigInt],
+    toMailbox: String,
+    byUid: Boolean
+  ): Future[Option[String]]
 
   def closeCurrentMailbox(): Future[Unit]
   def close(): Future[Unit]
 }
 object HighLevelServer {
+  val defaultCapabilities = Seq(
+    Imap.Capability.Imap4Rev1,
+    Imap.Capability.StartTls,
+    Imap.Capability.AuthPlain
+  )
+  
   trait Folder {
     def name: String
     def children(): Future[Seq[Folder]]
@@ -51,10 +60,10 @@ object HighLevelServer {
     def nextUid: BigInt
     
     def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]]
-    def getMessages(start: BigInt, end: BigInt): Future[Seq[(BigInt, Message)]]
+    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, Message)]]
     def checkpoint(): Future[Unit]
     def expunge(): Future[Seq[BigInt]]
-    def search(criteria: Seq[Imap.SearchCriterion]): Future[Seq[BigInt]]
+    def search(criteria: Seq[Imap.SearchCriterion], returnUids: Boolean): Future[Seq[BigInt]]
   }
   
   trait Message {
