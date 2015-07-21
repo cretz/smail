@@ -38,6 +38,30 @@ case class FlowBuilder(
       if (!debug) flow
       else flow.map({ v => println(prefix + ": " + v); v })
     }
+    
+    def funcTransform[V](funcMaker: () => U => V): Flow[T, V, Unit] = {
+      val mkStage = ()  => new StatefulStage[U, V] {
+        override def initial = new State {
+          val func = funcMaker()
+          override def onPush(elem: U, ctx: Context[V]): SyncDirective = {
+            emit(Iterator.single(func(elem)), ctx)
+          }
+        }
+      }
+      flow.transform(mkStage)
+    }
+    
+    def funcTransformIter[V](funcMaker: () => U => Iterable[V]): Flow[T, V, Unit] = {
+      val mkStage = ()  => new StatefulStage[U, V] {
+        override def initial = new State {
+          val func = funcMaker()
+          override def onPush(elem: U, ctx: Context[V]): SyncDirective = {
+            emit(func(elem).toIterator, ctx)
+          }
+        }
+      }
+      flow.transform(mkStage)
+    }
   }
   
   val negotiation = NegotiateNewSession.copy(enabledCipherSuites = cipherSuites.map(_.to[immutable.Seq]))
@@ -45,8 +69,8 @@ case class FlowBuilder(
   def byteStringToClientParseResult(): Flow[ByteString, ClientCommand.ParseResult, Unit] =
     Flow[ByteString].
       map(_.decodeString("US-ASCII")).withDebug("Client String").
-      mapConcat(StringToTokenSet()(_).toStream).withDebug("Client Tokens").
-      map(TokenSetToClientCommand()).withDebug("Client Cmd")
+      funcTransformIter(StringToTokenSet.apply).withDebug("Client Tokens").
+      funcTransform(TokenSetToClientCommand.apply).withDebug("Client Cmd")
       
   def serverResponseToByteString(): Flow[ServerResponse, ByteString, Unit] =
     Flow[ServerResponse].
@@ -65,7 +89,7 @@ case class FlowBuilder(
     new StatefulStage[ServerResponse, SslTlsOutbound] {
       def serverResponseToStringDebug(resp: ServerResponse): String = {
         val str = ServerResponseToString(resp)
-        println(s"Server String: $str")
+        if (debug) println(s"Server String: $str")
         str
       }
       override def initial = new State {
@@ -87,8 +111,7 @@ case class FlowBuilder(
     Flow[ClientCommand.ParseResult].
       transform(() => new ServerHandlerStage(mkHandler())).
       mapAsync(parallelism)(identity).
-      mapConcat(immutable.Iterable(_:_*)).
-      withDebug("Server Cmd").
+      mapConcat(immutable.Iterable(_:_*)).withDebug("Server Cmd").
       transform(() => new CloseConnectionStage)
   }
 

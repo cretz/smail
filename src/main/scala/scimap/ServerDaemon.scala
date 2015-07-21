@@ -18,8 +18,8 @@ case class ServerDaemon(
   sslContext: Option[SSLContext],
   cipherSuites: Option[Seq[String]]
 )(implicit system: ActorSystem, mat: Materializer) {
-  def start(): Future[Unit] = Tcp().bind(interface, port).runForeach(_.handleWith(
-    FlowBuilder(debug, sslContext, cipherSuites).tlsEnabledByteStringToByteString(handler)))
+  lazy val flow = FlowBuilder(debug, sslContext, cipherSuites).tlsEnabledByteStringToByteString(handler)
+  def start(): Future[Unit] = Tcp().bind(interface, port).runForeach(_.handleWith(flow))
 }
 object ServerDaemon {
   def apply(conf: Config.Server.Daemon, debug: Boolean = false)
