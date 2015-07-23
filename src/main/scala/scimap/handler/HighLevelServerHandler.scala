@@ -55,6 +55,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
         requestAuthentication(auth)
       case (State.NotAuthenticated, Some(cli.UnrecognizedCommand(seq))) if pendingAuthentication.isDefined =>
         handlePendingAuthentication(seq)
+      case (State.NotAuthenticated, Some(cli.CommandSuccess(cli.Login(tag, username, password)))) =>
+        handleLogin(tag, username, password)
       case (State.NotAuthenticated, Some(cli.CommandSuccess(cli.StartTls(tag)))) =>
         Future.successful(Seq(ser.Ok("Begin TLS negotiation now", Some(tag)), ser.StartTls))
       case (_, Some(cli.CommandSuccess(cli.Capability(tag)))) =>
@@ -165,6 +167,19 @@ class HighLevelServerHandler(val server: HighLevelServer)
           }
         }
       case _ => Future.successful(Seq(ser.Bad("Unable to read credentials", Some(tag))))
+    }
+  }
+  
+  def handleLogin(tag: String, username: String, password: String): Future[Seq[ser]] = {
+    if (pendingAuthentication.isDefined) failAndClose("Authentication already pending")
+    else {
+      server.authenticatePlain(username, password).map {
+        case true =>
+          state = State.Authenticated
+          Seq(ser.Ok("Login successful", Some(tag)))
+        case false =>
+          Seq(ser.No("Login failed", Some(tag)))
+      }
     }
   }
   
@@ -342,8 +357,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
   
   def handleExpunge(tag: String): Future[Seq[ser]] = {
     server.currentMailbox.map({ mailbox =>
-      mailbox.expunge().map {
-        _.map(ser.Expunge(_)) :+ ser.Ok("EXPUNGE completed", Some(tag))
+      mailbox.expunge().map { ids =>
+        ids.map(ser.Expunge(_)) :+ ser.Ok("EXPUNGE completed", Some(tag))
       }
     }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
   }

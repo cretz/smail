@@ -74,8 +74,7 @@ case class FlowBuilder(
       
   def serverResponseToByteString(): Flow[ServerResponse, ByteString, Unit] =
     Flow[ServerResponse].
-      map(ServerResponseToString).
-      withDebug("Server Cmd").
+      map(ServerResponseToString).withDebug("Server String").
       map(s => ByteString(s + "\r\n", "US-ASCII"))
       
   
@@ -155,6 +154,6 @@ case class FlowBuilder(
       
       FlowShape(inBcast.in, outMerge.out)
     }
-    Flow[ByteString].transform(() => new Inbound).via(switchableTls)
+    Flow[ByteString].transform(() => new Inbound(debug)).via(switchableTls)
   }
 }

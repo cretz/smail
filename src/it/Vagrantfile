@@ -1,0 +1,23 @@
+Vagrant.configure(2) do |config|
+  config.vm.box = "ubuntu/trusty64"
+  config.ssh.insert_key = false 
+  config.vm.network :private_network, ip: "192.168.50.4"
+  config.vm.provision "shell", inline: <<-SHELL
+    sudo apt-get update
+    sudo apt-get install -y build-essential
+    wget http://dovecot.org/nightly/dovecot-latest.tar.gz
+    tar -xvf dovecot-latest.tar.gz
+    mv dovecot-2* dovecot-latest
+    cd dovecot-latest
+    ./configure && make
+    cd ..
+    wget http://dovecot.org/nightly/imaptest/imaptest-latest.tar.gz
+    tar -xvf imaptest-latest.tar.gz
+    cd imaptest-1.0.0
+    ./configure --with-dovecot=../dovecot-latest && make
+    cd ..
+    wget http://www.dovecot.org/tmp/dovecot-crlf
+    mkdir mail
+    mv dovecot-crlf mail/
+  SHELL
+end

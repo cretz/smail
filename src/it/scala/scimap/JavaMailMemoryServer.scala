@@ -20,6 +20,8 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import java.security.cert.X509Certificate
 import akka.stream.Supervision
+import scala.concurrent.Await
+import scala.concurrent.duration._
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {
@@ -46,6 +48,8 @@ object JavaMailMemoryServer {
     var username = "foo"
     var password = "bar"
     var useClientTls = false
+    
+    def startDaemon(): Unit = Await.ready(daemon.start().bindFuture, 10.seconds)
     
     def useTls(
       password: String = "changeme",
@@ -76,7 +80,6 @@ object JavaMailMemoryServer {
     var storeInitialized = false
     lazy val store = {
       val store = session.getStore("imap")
-      println("Connecting to ", daemon.interface, daemon.port)
       store.connect(daemon.interface, daemon.port, username, password)
       storeInitialized = true
       store

@@ -51,7 +51,7 @@ class ImapTokenParser(val input: ParserInput) extends Parser with StringBuilding
   def RespSpecials = rule { ch('[') | ']' }
   
   def AtomSpecials = rule {
-    ImapTokenParser.ControlChar | '(' | ')' | '{' | ' ' | ListWildcards | QuotedSpecials | RespSpecials
+    ImapTokenParser.ControlChar | '(' | ')' | '{' | ' ' /*| ListWildcards*/ | QuotedSpecials | RespSpecials
   }
 }
 

@@ -23,4 +23,15 @@ object Util extends Util {
   }
   
   override protected def threadLocalMd5Instance: MessageDigest = threadLocalMd5.get
+  
+  object Implicits {
+    implicit class StringInterpolations(val sc: StringContext) extends AnyVal {
+      // Use s() for escapes, ref: https://issues.scala-lang.org/browse/SI-6476
+      def ci = new CaseInsensitiveExtract(sc.s())
+    }
+  }
+  
+  class CaseInsensitiveExtract(val string: String) extends AnyVal {
+    def unapply(other: String) = string.equalsIgnoreCase(other)
+  }
 }

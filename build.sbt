@@ -1,6 +1,6 @@
 resolvers += "scalaz-bintray" at "http://dl.bintray.com/scalaz/releases"
 
-EclipseKeys.configurations := Set(Compile, Test, IntegrationTest)
+// EclipseKeys.configurations := Set(Compile, Test, IntegrationTest)
 
 lazy val scimap = (project in file(".")).
   configs(IntegrationTest).
@@ -18,3 +18,9 @@ lazy val scimap = (project in file(".")).
     libraryDependencies += "org.specs2" %% "specs2-junit" % "3.6" % "it,test",
     libraryDependencies += "com.sun.mail" % "javax.mail" % "1.5.3" % "it,test"
   )
+
+initialize := {
+  val required = "1.8"
+  val current  = sys.props("java.specification.version")
+  assert(current == required, s"Unsupported JDK: java.specification.version $current != $required")
+}

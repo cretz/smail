@@ -87,7 +87,7 @@ trait ServerResponseToString extends (ServerResponse => String) {
   def statusResponse(resp: StatusResponse): String = {
     val tag = resp.tag.getOrElse("*")
     val responseCode = resp.responseCode.map(" [" + statusResponseCode(_) + ']').getOrElse("")
-    tag + ' ' + resp.name + responseCode + ' ' + safeString(resp.text)
+    tag + ' ' + resp.name + responseCode + ' ' + resp.text
   }
   
   def statusResponseCode(code: StatusResponseCode): String = {

@@ -17,15 +17,20 @@ trait StringToTokenSet extends (String => Seq[Seq[ImapToken]]) {
   
   def nextTokenSets(): Seq[Seq[ImapToken]] = {
     // Parse should never fail here
+    println("String buffer: " + buffer)
     val parser = new ImapTokenParser(new ImapTokenParser.BufferedParserInput(buffer))
     val result = parser.Tokens.run()
+    println("Results: " + result)
     tokenBuffer ++= result.get
+    println("Token buffer: " + tokenBuffer)
     
     // Break on newlines or count prefixes
     val (sets, newBuffer) = splitTokensOnNewlineOrCountPrefix(tokenBuffer)
+    println("Sets: " + sets)
+    println("New buffer: " + newBuffer)
     // Trim up the string to as far as we got
     // Note, if we ended with a count prefix, we must not pass it
-    sets.headOption.flatMap(_.lastOption) match {
+    sets.lastOption.flatMap(_.lastOption) match {
       case Some(_: ImapToken.StrCountPrefix) => buffer.delete(0, buffer.lastIndexOf('{'))
       case _ => buffer.delete(0, parser.cursor)
     }
