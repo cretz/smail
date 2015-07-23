@@ -2,11 +2,11 @@ resolvers += "scalaz-bintray" at "http://dl.bintray.com/scalaz/releases"
 
 // EclipseKeys.configurations := Set(Compile, Test, IntegrationTest)
 
-lazy val scimap = (project in file(".")).
+lazy val smail = (project in file(".")).
   configs(IntegrationTest).
   settings(Defaults.itSettings: _*).
   settings(
-    name := "scimap",
+    name := "smail",
     version := "0.1.0",
     scalaVersion := "2.11.7",
     scalacOptions ++= Seq("-deprecation", "-feature"),
