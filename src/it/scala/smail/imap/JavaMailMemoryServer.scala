@@ -25,7 +25,6 @@ import scala.concurrent.duration._
 
 trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   override def foreach[R: AsResult](f: JavaMailMemoryServer.Context => R): Result = {
-    val server = new InMemoryServer()
     val ctx = new JavaMailMemoryServer.Context()
     try AsResult(f(ctx))
     finally {
@@ -36,7 +35,7 @@ trait JavaMailMemoryServer extends ForEach[JavaMailMemoryServer.Context] {
   }
 }
 object JavaMailMemoryServer {  
-  class Context(val server: InMemoryServer = new InMemoryServer()) {
+  class Context(val server: InMemoryServer = new InMemoryServer(new InMemoryServer.State())) {
     implicit val system = ActorSystem("smail-imap-server")
     implicit val materializer = ActorMaterializer(
       ActorMaterializerSettings(system).withDebugLogging(true)

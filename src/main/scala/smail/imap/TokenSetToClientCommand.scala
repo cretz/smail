@@ -212,15 +212,16 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
           case _ => UnexpectedArguments(allTokens)
         }
       }
-    case ci"UID" => parameters.lift(1) match {
-      case Some(ImapToken.Str(subCmdName, _)) => parseCommand(tag, subCmdName, parameters.drop(2), allTokens) match {
-        case fail: Failure => fail
-        case CommandSuccess(cmd: Copy) => CommandSuccess(Uid(tag, UidCommand.Copy(cmd)))
-        case CommandSuccess(cmd: Fetch) => CommandSuccess(Uid(tag, UidCommand.Fetch(cmd)))
-        case CommandSuccess(cmd: Store) => CommandSuccess(Uid(tag, UidCommand.Store(cmd)))
-        case CommandSuccess(cmd: Search) => CommandSuccess(Uid(tag, UidCommand.Search(cmd)))
-        case _ => UnexpectedArguments(allTokens)
-      }
+    case ci"UID" => parameters.lift(0) match {
+      case Some(ImapToken.Str(subCmdName, _)) =>
+        parseCommand(tag, subCmdName, parameters.drop(1), allTokens) match {
+          case fail: Failure => fail
+          case CommandSuccess(cmd: Copy) => CommandSuccess(Uid(tag, UidCommand.Copy(cmd)))
+          case CommandSuccess(cmd: Fetch) => CommandSuccess(Uid(tag, UidCommand.Fetch(cmd)))
+          case CommandSuccess(cmd: Store) => CommandSuccess(Uid(tag, UidCommand.Store(cmd)))
+          case CommandSuccess(cmd: Search) => CommandSuccess(Uid(tag, UidCommand.Search(cmd)))
+          case _ => UnexpectedArguments(allTokens)
+        }
       case _ => UnexpectedArguments(allTokens)
     }
     case ci"IDLE" =>

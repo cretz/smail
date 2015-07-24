@@ -4,18 +4,14 @@ package handler
 import java.time.ZonedDateTime
 import scala.concurrent.Future
 import java.util.regex.Pattern
-import scala.math.BigInt.int2bigInt
-import scala.math.BigInt.long2bigInt
 import smail.Util
 import scala.util.Try
 
 // Basically only for testing
-class InMemoryServer extends HighLevelServer {
+class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
   import HighLevelServer._
   import InMemoryServer._
   
-  @volatile
-  var users = Map.empty[String, InMemoryUser]
   @volatile
   var currentUser = Option.empty[InMemoryUser]
   @volatile
@@ -23,16 +19,28 @@ class InMemoryServer extends HighLevelServer {
   @volatile
   var currentMailboxReadOnly = false
   @volatile
+  var currentMailboxLastEventIndex = 0
+  @volatile
   var _capabilities = Option.empty[Seq[Imap.Capability]]
   @volatile
   var listenCallback = Option.empty[CallbackUpdate => Unit]
+  
+  override def getCurrentMailboxEvents(): Future[Map[BigInt, MailboxEvent]] = {
+    currentMailbox match {
+      case None => Future.successful(Map.empty)
+      case Some(mailbox) =>
+        val results = mailbox.events.drop(currentMailboxLastEventIndex).toMap
+        currentMailboxLastEventIndex = mailbox.events.size - 1
+        Future.successful(results)
+    }
+  }
   
   override def listen(f: Option[CallbackUpdate => Unit]): Unit = listenCallback = f
   
   override def capabilities() = _capabilities.map(Future.successful).getOrElse(super.capabilities())
   
   def authenticatePlain(username: String, password: String): Future[Boolean] =
-    users.get(username) match {
+    state.users.get(username) match {
       case Some(user) if user.password == password =>
         currentUser = Some(user)
         Future.successful(true)
@@ -56,6 +64,7 @@ class InMemoryServer extends HighLevelServer {
     Future.successful(get(mailbox).value.get.get.map { mailbox =>
       currentMailbox = Some(mailbox.asInstanceOf[InMemoryMailbox])
       currentMailboxReadOnly = readOnly
+      currentMailboxLastEventIndex = 0
       mailbox
     })
     
@@ -218,7 +227,8 @@ class InMemoryServer extends HighLevelServer {
   }
   
   def closeCurrentMailbox(): Future[Unit] = {
-    if (currentMailboxReadOnly) currentMailbox.get.expunge()
+    if (!currentMailboxReadOnly) currentMailbox.get.expunge()
+    currentMailboxLastEventIndex = 0
     Future.successful(currentMailbox = None)
   }
   
@@ -226,6 +236,10 @@ class InMemoryServer extends HighLevelServer {
 }
 object InMemoryServer {
   import HighLevelServer._
+  
+  class State(
+    @volatile var users: Map[String, InMemoryUser] = Map.empty
+  )
   
   class InMemoryUser(
     @volatile var username: String,
@@ -259,9 +273,14 @@ object InMemoryServer {
     @volatile var uidValidity: BigInt = System.currentTimeMillis,
     private var childrenParam: Seq[InMemoryFolder] = Seq.empty
   ) extends InMemoryFolder(nameParam, childrenParam) with Mailbox {
+    
+    @volatile
+    var events = Seq.empty[(BigInt, MailboxEvent)]
+    
     def exists = messages.size
     def recent = messages.count(_.flags.contains(Imap.Flag.Recent))
     def firstUnseen = messages.find(!_.flags.contains(Imap.Flag.Seen)).map(_.uid).getOrElse(0)
+    def unseen = messages.count(!_.flags.contains(Imap.Flag.Seen))
     def nextUid = messages.foldLeft(BigInt(0)){ case (max, msg) => max.max(msg.uid) } + 1
     
     def msgSeqFromUid(uid: BigInt): BigInt = messages.indexWhere(_.uid == uid) match {
@@ -275,15 +294,18 @@ object InMemoryServer {
       if (byUid) {
         // Don't have to be contiguous here...
         properStart = messages.indexWhere(_.uid == start) + 1
-        if (properStart == 0) return Seq.empty
-        properEnd.foreach{ end =>
+        if (properStart == 0)  {
+          // Per the spec, non-end always returns the last message
+          if (properEnd.isEmpty) properStart = messages.size
+          else return Seq.empty
+        } else properEnd.foreach { end =>
           properEnd = Some(messages.indexWhere(_.uid == end) + 1)
           // Has to be present and >= start
           if (properEnd.get == 0 || properEnd.get < start) return Seq.empty
         }
       }
       val lifted = messages.lift
-      (start to end.getOrElse(messages.size)).flatMap(i => lifted(i.toInt - 1).map(i -> _))
+      (properStart to properEnd.getOrElse(messages.size)).flatMap(i => lifted(i.toInt - 1).map(i -> _))
     }
     
     def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, Message)]] = {
@@ -309,6 +331,7 @@ object InMemoryServer {
       // Add message w/ body, flags, and overridden date
       addMessage(
         new InMemoryMessage(
+          mailbox = this,
           uid = nextUid,
           flags = flags,
           headers = headers.foldLeft(MailHeaders.InMemory())(_ + _) + (MailHeaders.Date -> date),
@@ -319,6 +342,7 @@ object InMemoryServer {
     }
     
     def addMessage(msg: InMemoryMessage): Unit = {
+      msg.flags += Imap.Flag.Recent
       messages :+= msg
       listenCallback.foreach(_(CallbackUpdate.Exists(exists)))
     }
@@ -337,6 +361,7 @@ object InMemoryServer {
           messages = messages.filterNot(_.uid == msg.uid)
           seq :+ index
       }
+      seq.foreach(i => events :+= i -> MailboxEvent.MessageExpunged(i))
       Future.successful(seq)
     }
     
@@ -412,6 +437,7 @@ object InMemoryServer {
   }
   
   class InMemoryMessage(
+    @volatile var mailbox: InMemoryMailbox,
     @volatile var uid: BigInt,
     @volatile var flags: Set[Imap.Flag],
     @volatile var headers: MailHeaders,
@@ -457,31 +483,34 @@ object InMemoryServer {
     // TODO: confirm whether this is just body or not
     def size: BigInt = body.length
     
-    def markSeen(): Future[Unit] = Future.successful(flags += Imap.Flag.Seen)
-    def getPart(part: Seq[Int]): Future[Option[String]] = ???
+    def markSeen(): Future[Unit] = Future.successful {
+      flags += Imap.Flag.Seen
+      flags -= Imap.Flag.Recent
+    }
+    def getPart(part: Seq[Int]): Future[Option[String]] = { println("NO3"); ??? }
     def getHeader(part: Seq[Int], name: String): Future[Seq[String]] =
-      if (!part.isEmpty) ???
+      if (!part.isEmpty) { println("NO4"); ??? }
       else Future.successful(MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_)))
     def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Future[Seq[String]] = {
       val not = notIncluding.flatMap(MailHeaders.typeFromString(_).toSeq)
       Future.successful(headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq)
     }
-    def getMime(part: Seq[Int]): Future[Option[String]] = ???
+    def getMime(part: Seq[Int]): Future[Option[String]] = { println("NO5"); ??? }
     def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Future[Option[String]] =
-      if (!part.isEmpty) ???
+      if (!part.isEmpty) { println("NO5"); ??? }
       else if (offset.isEmpty) Future.successful(Some(body))
       else Future.successful(
         Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
       )
       
     def alterFlags(flags: Set[Imap.Flag], operation: Imap.FlagOperation): Future[Unit] = {
-      println("FLAGS BEFORE: " + this.flags)
+      // TODO: We need to ignore keyword flags until we are ready to support some form of PERMANENTFLAGS
+      val flagSet = flags // flags.filterNot(_.isInstanceOf[Imap.Flag.NonStandard])
       operation match {
-        case Imap.FlagOperation.Replace => this.flags = flags
-        case Imap.FlagOperation.Add => this.flags ++= flags
-        case Imap.FlagOperation.Remove => this.flags --= flags
+        case Imap.FlagOperation.Replace => this.flags = flagSet
+        case Imap.FlagOperation.Add => this.flags ++= flagSet
+        case Imap.FlagOperation.Remove => this.flags --= flagSet
       }
-      println("FLAGS AFTER: " + this.flags)
       Future.successful(())
     }
   }

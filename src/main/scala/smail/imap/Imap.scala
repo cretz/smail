@@ -55,13 +55,14 @@ object Imap {
     case object Recent extends Flag {
       override def toString = "\\Recent"
     }
-    case class Keyword(keyword: String) extends Flag {
+    sealed trait NonStandard extends Flag
+    case class Keyword(keyword: String) extends NonStandard {
       override def toString = keyword
     }
-    case class Extension(extension: String) extends Flag {
+    case class Extension(extension: String) extends NonStandard {
       override def toString = "\\" + extension
     }
-    case object AcceptNewKeyword extends Flag {
+    case object AcceptNewKeyword extends NonStandard {
       override def toString = "\\*"
     }
   }

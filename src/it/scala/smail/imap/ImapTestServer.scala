@@ -6,6 +6,7 @@ import akka.stream.ActorMaterializerSettings
 import akka.stream.ActorMaterializer
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import smail.imap.handler.InMemoryServer
 
 // For use w/ the dovecot ImapTest
 object ImapTestServer extends App {
@@ -20,8 +21,8 @@ object ImapTestServer extends App {
   import system.dispatcher
     
   // Create server with user
-  val server = new InMemoryServer()
-  server.users += "foo" -> new InMemoryUser(
+  val state = new InMemoryServer.State()
+  state.users += "foo" -> new InMemoryUser(
     username = "foo",
     password = "bar",
     Map(
@@ -34,7 +35,14 @@ object ImapTestServer extends App {
   )
   
   // Start
-  val daemon = ServerDaemon("0.0.0.0", 143, () => new HighLevelServerHandler(server), true, None, None)
+  val daemon = ServerDaemon(
+    "0.0.0.0",
+    143,
+    () => new HighLevelServerHandler(new InMemoryServer(state)),
+    true,
+    None,
+    None
+  )
   val daemonStartInfo = daemon.start()
   Await.ready(daemonStartInfo.bindFuture, 10.seconds)
   

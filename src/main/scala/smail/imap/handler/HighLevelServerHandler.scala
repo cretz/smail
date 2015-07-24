@@ -245,13 +245,19 @@ class HighLevelServerHandler(val server: HighLevelServer)
   }
   
   def handleNoop(tag: String): Future[Seq[ser]] = {
-    var responses = Seq.empty[ser]
-    server.currentMailbox.foreach { res =>
-      responses :+= ser.Exists(res.exists)
-      responses :+= ser.Recent(res.recent)
-      // TODO: EXPUNGE and FETCH
+    server.getCurrentMailboxEvents().map { events =>
+      val regularResponses = Seq(
+        ser.Exists(server.currentMailbox.get.exists),
+        ser.Recent(server.currentMailbox.get.recent)
+      )
+      val eventResponses = events.values.map({
+        case MailboxEvent.MessageExpunged(seq) =>
+          ser.Expunge(seq)
+        case MailboxEvent.MessageFlagsUpdated(seq, flags) =>
+          ser.Fetch(seq, Seq(ser.FetchDataItem.Flags(flags.toSeq)))
+      }).toSeq
+      eventResponses ++ regularResponses :+ ser.Ok("NOOP completed", Some(tag))
     }
-    Future.successful(responses :+ ser.Ok("NOOP completed", Some(tag)))
   }
   
   def listStringToTokens(str: String): Seq[Imap.ListToken] = {
@@ -315,7 +321,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
             case Imap.StatusDataItem.Recent => box.recent
             case Imap.StatusDataItem.UidNext => box.nextUid
             case Imap.StatusDataItem.UidValidity => box.uidValidity
-            case Imap.StatusDataItem.Unseen => box.firstUnseen
+            case Imap.StatusDataItem.Unseen => box.unseen
           })
         }
         Seq(ser.Status(mailbox, info), ser.Ok("STATUS completed", Some(tag)))
@@ -336,7 +342,12 @@ class HighLevelServerHandler(val server: HighLevelServer)
         )
       case Some(mailbox) =>
         mailbox.addMessage(message, flags.toSet, date.getOrElse(ZonedDateTime.now())).map {
-          case None => Seq(ser.Ok("APPEND completed", Some(tag)))
+          case None =>
+            // Per the dovecot tests, we return the message count here
+            Seq(
+              ser.Exists(mailbox.exists),
+              ser.Ok("APPEND completed", Some(tag))
+            )
           case Some(err) => Seq(ser.No("APPEND error: " + err, Some(tag)))
         }
     }
@@ -383,8 +394,14 @@ class HighLevelServerHandler(val server: HighLevelServer)
   
   def getRangesFromSequenceSet(set: Imap.SequenceSet): Seq[(BigInt, Option[BigInt])] = {
     set.items.map {
-      case num: Imap.SequenceNumber => num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
-      case Imap.SequenceRange(low, high) => low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
+      case num: Imap.SequenceNumber =>
+        num.valueOption.getOrElse(BigInt(1)) -> num.valueOption
+      case Imap.SequenceRange(Imap.SequenceNumberAll, low) =>
+        low.valueOption.getOrElse(BigInt(1)) -> None
+      case Imap.SequenceRange(Imap.SequenceNumberLiteral(low), Imap.SequenceNumberLiteral(high)) if high < low =>
+        high -> Some(low)
+      case Imap.SequenceRange(low, high) =>
+        low.valueOption.getOrElse(BigInt(1)) -> high.valueOption
     }
   }
   
@@ -414,7 +431,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
           cli.FetchDataItem.Rfc822Size)
       case Left(ClientCommand.FetchMacro.Full) =>
         Seq(cli.FetchDataItem.Flags, cli.FetchDataItem.InternalDate, cli.FetchDataItem.Rfc822Size,
-          cli.FetchDataItem.Envelope, cli.FetchDataItem.Body(Imap.BodyPart.Part(Seq.empty)))
+          cli.FetchDataItem.Envelope, cli.FetchDataItem.NonExtensibleBodyStructure)
       case Right(seq) => seq
     }
     
@@ -575,6 +592,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
     structure match {
       case Imap.BodyStructureMulti(parts, subType, extension) =>
         // TODO:
+        println("NO1")
         ???
       case str: Imap.BodyStructureSingle =>
         var list = List('(', Seq(
@@ -610,7 +628,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
           }
         }
         list.copy(values = list.values ++ addToList)
-      case _ => ???
+      case _ => println("NO2"); ???
     }
   }
   

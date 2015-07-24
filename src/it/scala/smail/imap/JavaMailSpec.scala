@@ -37,7 +37,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   "JavaMail API" >> {
 
     "Should be able to fetch simple messages" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       val inbox = ctx.store.getFolder("INBOX")
       inbox.open(Folder.READ_ONLY)
@@ -73,7 +73,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     "Should list properly" >> { ctx: Context =>
       // We try to hit the commands we didn't in the previous test
       val (testUsername, testUser) = createTestUser
-      ctx.server.users += testUsername -> testUser
+      ctx.server.state.users += testUsername -> testUser
       ctx.startDaemon()
       // Let's see the children of the default folder
       val defaultFolder = ctx.store.getDefaultFolder
@@ -91,7 +91,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     
     "Should handle non-idle count update" >> { implicit ee: EE => ctx: Context =>
       val (testUsername, testUser) = createTestUser
-      ctx.server.users += testUsername -> testUser
+      ctx.server.state.users += testUsername -> testUser
       ctx.startDaemon()
       val inbox = ctx.store.getFolder("INBOX")
       inbox.open(Folder.READ_WRITE)
@@ -102,7 +102,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
         override def messagesRemoved(e: MessageCountEvent) = countEvents :+= e
       })
       // Add a message
-      testUser.folders.values.head.asInstanceOf[InMemoryMailbox].addMessage(newMessage(3000))
+      addNewMessage(testUser.folders.values.head.asInstanceOf[InMemoryMailbox], 3000)
       // We have to wait over a second because of Java IMAP impl
       Thread.sleep(1100)
       // Fetch message count to trigger listener
@@ -119,7 +119,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     
     "Should handle idle count update" >> { implicit ee: EE => ctx: Context =>
       val (testUsername, testUser) = createTestUser
-      ctx.server.users += testUsername -> testUser
+      ctx.server.state.users += testUsername -> testUser
       ctx.server._capabilities = Some(HighLevelServer.defaultCapabilities :+ Imap.Capability.Idle)
       ctx.startDaemon()
       val inbox = ctx.store.getFolder("INBOX")
@@ -135,7 +135,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       // Wait just a bit
       Thread.sleep(200)
       // Add a message
-      testUser.folders.values.head.asInstanceOf[InMemoryMailbox].addMessage(newMessage(3000))
+      addNewMessage(testUser.folders.values.head.asInstanceOf[InMemoryMailbox], 3000)
       countEvents.size must be_==(1).eventually
       countEvents(0).getType === MessageCountEvent.ADDED
       countEvents(0).getMessages.length === 1
@@ -148,7 +148,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
 
     "Should be able to handle TLS" >> { ctx: Context =>
       ctx.useTls()
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       val inbox = ctx.store.getFolder("INBOX")
       inbox.open(Folder.READ_WRITE)
@@ -160,7 +160,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
 
     "Should be able to create a new mailbox and rename it and delete it" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       val topFolder = ctx.store.getFolder("NewTestFolder")
       topFolder.exists() === false
@@ -189,7 +189,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
 
     "Should be able to subscribe, unsubscribe, and list subscribed" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       ctx.store.getFolder("/NewTestSubMailbox").create(Folder.HOLDS_MESSAGES) === true
       ctx.store.getFolder("/NewTestSubMailbox").isSubscribed() === false
@@ -200,13 +200,13 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
 
     "Should be able to fetch a status value" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       ctx.store.getFolder("/INBOX").asInstanceOf[IMAPFolder].getStatusItem("MESSAGES") === 30
     }
 
     "Should be able to append messages" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       val folder = ctx.store.getFolder("/INBOX")
       folder.getMessageCount === 30
@@ -225,7 +225,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
 
     "Should expunge deleted" >> { ctx: Context =>
       val user = createTestUser
-      ctx.server.users += user
+      ctx.server.state.users += user
       ctx.startDaemon()
       // Let's mark messages 5 and 10 as deleted
       val mailbox = user._2.folders.head._2.asInstanceOf[InMemoryMailbox]
@@ -243,7 +243,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
     
     "Should search" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       // Let's take every message with subject containing 5 or body containing 7
       val folder = ctx.store.getFolder("/INBOX")
@@ -255,7 +255,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     
     "Should store" >> { ctx: Context =>
       val user = createTestUser
-      ctx.server.users += user
+      ctx.server.state.users += user
       ctx.startDaemon()
       // Add Seen to 15 through 20
       val folder = ctx.store.getFolder("/INBOX")
@@ -272,7 +272,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
 
     "Should copy" >> { ctx: Context =>
-      ctx.server.users += createTestUser
+      ctx.server.state.users += createTestUser
       ctx.startDaemon()
       ctx.store.getFolder("/NewTestSubMailbox").create(Folder.HOLDS_MESSAGES) === true
       // Make sure it has no messages at first
@@ -289,10 +289,11 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
     }
   }
   
-  def newMessage(uid: Int) = {
+  def addNewMessage(mailbox: InMemoryMailbox, uid: Int) = {
     import InMemoryServer._
     import MailHeaders._
-    new InMemoryMessage(
+    mailbox.addMessage(new InMemoryMessage(
+      mailbox = mailbox,
       uid = uid,
       flags = Set.empty,
       headers = InMemory() +
@@ -302,21 +303,22 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
         (MessageId -> ("foo" + uid -> ("bar" + uid))) +
         (To -> Seq(Imap.MailboxAddress("baz" -> "qux"))),
       body = "Test message " + uid
-    )
+    ))
   }
     
   def createTestUser() = {
     import InMemoryServer._
+    val mailbox = new InMemoryMailbox(
+      "INBOX",
+      flags = Set(Imap.Flag.Answered),
+      permanentFlags = Set.empty
+    )
+    for (uid <- 1 to 30) addNewMessage(mailbox, uid)
     "foo" -> new InMemoryUser(
       username = "foo",
       password = "bar",
       folders = Map(
-        "INBOX" -> new InMemoryMailbox(
-          "INBOX",
-          flags = Set(Imap.Flag.Answered),
-          permanentFlags = Set.empty,
-          messages = for (uid <- 1 to 30) yield newMessage(uid)
-        )
+        "INBOX" -> mailbox
       )
     )
   }

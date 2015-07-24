@@ -9,6 +9,8 @@ trait HighLevelServer {
   
   def currentMailbox: Option[Mailbox]
   
+  def getCurrentMailboxEvents(): Future[Map[BigInt, MailboxEvent]]
+  
   def listen(f: Option[CallbackUpdate => Unit]): Unit
   
   def capabilities(): Future[Seq[Imap.Capability]] = Future.successful(defaultCapabilities)
@@ -44,6 +46,12 @@ object HighLevelServer {
     Imap.Capability.AuthPlain
   )
   
+  sealed trait MailboxEvent
+  object MailboxEvent {
+    case class MessageExpunged(seq: BigInt) extends MailboxEvent
+    case class MessageFlagsUpdated(seq: BigInt, flags: Set[Imap.Flag]) extends MailboxEvent
+  }
+  
   trait Folder {
     def name: String
     def children(): Future[Seq[Folder]]
@@ -54,6 +62,7 @@ object HighLevelServer {
     def exists: BigInt
     def recent: BigInt
     def firstUnseen: BigInt
+    def unseen: BigInt
     def flags: Set[Imap.Flag]
     def permanentFlags: Set[Imap.Flag]
     def uidValidity: BigInt
