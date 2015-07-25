@@ -52,13 +52,23 @@ trait ServerResponseToString extends (ServerResponse => String) {
   
   def bodyPart(part: Imap.BodyPart): String = {
     import Imap.BodyPart._
+    @inline
+    def withNumPrefix(nums: Seq[Int], suffix: String): String =
+      if (nums.isEmpty) suffix
+      else nums.mkString(".") + '.' + suffix
     part match {
-      case Part(nums) => nums.mkString(".")
-      case Header(nums) => nums.mkString("", ".", ".HEADER")
-      case HeaderFields(nums, fields) => nums.mkString("", ".", ".HEADER.FIELDS (" + fields.mkString(" ") + ')')
-      case HeaderFieldsNot(nums, fields) => nums.mkString("", ".", ".HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')')
-      case Mime(nums) => nums.mkString("", ".", ".MIME")
-      case Text(nums) => nums.mkString("", ".", ".TEXT")
+      case Part(nums) =>
+        nums.mkString(".")
+      case Header(nums) =>
+        withNumPrefix(nums, "HEADER")
+      case HeaderFields(nums, fields) =>
+        withNumPrefix(nums, "HEADER.FIELDS (" + fields.mkString(" ") + ')')
+      case HeaderFieldsNot(nums, fields) =>
+        withNumPrefix(nums, "HEADER.FIELDS.NOT (" + fields.mkString(" ") + ')')
+      case Mime(nums) =>
+        withNumPrefix(nums, "MIME")
+      case Text(nums) =>
+        withNumPrefix(nums, "TEXT")
     }
   }
   
@@ -130,6 +140,10 @@ trait ServerResponseToString extends (ServerResponse => String) {
   def safeString(string: String, forceQuote: Boolean = false): String = {
     // Empty strings are just double quotes
     if (string.isEmpty) return "\"\""
+    // If the string contains a newline, we need to use the multiline approach
+    if (string.contains("\r") || string.contains("\n")) {
+      return "{" + string.length + "}\r\n" + string + "\r\n"
+    }
     // Only if the string contains a slash, double quote, or a space do we want to double quote it
     val result = string.replace("\\", "\\\\").replace("\"","\\\"")
     if (!forceQuote && result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result

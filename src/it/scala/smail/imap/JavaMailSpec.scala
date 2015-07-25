@@ -45,7 +45,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       msgs.length === 30
       val secondMsg = msgs(1)
       // At first it's unseen
-      secondMsg.getFlags === new Flags()
+      secondMsg.getFlags === new Flags(Flags.Flag.RECENT)
       secondMsg.getAllRecipients.toSeq === Seq(new InternetAddress("baz@qux"))
       secondMsg.getContent === "Test message 2"
       // Make sure it's now considered "seen"
@@ -155,7 +155,7 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       val msgs = inbox.getMessages
       msgs.length === 30
       val secondMsg = msgs(1)
-      secondMsg.getFlags === new Flags()
+      secondMsg.getFlags === new Flags(Flags.Flag.RECENT)
       secondMsg.getAllRecipients.toSeq === Seq(new InternetAddress("baz@qux"))
     }
 

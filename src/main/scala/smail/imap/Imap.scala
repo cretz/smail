@@ -145,7 +145,9 @@ object Imap {
     location: Seq[String] = Seq.empty
   )
 
-  sealed trait BodyPart
+  sealed trait BodyPart {
+    def nums: Seq[Int]
+  }
   object BodyPart {
     case class Part(nums: Seq[Int]) extends BodyPart
     case class Header(nums: Seq[Int]) extends BodyPart
@@ -186,7 +188,9 @@ object Imap {
       else '[' + result + ']'
     }
     
-    def fromString(string: String): Option[MailAddress] = ???
+    def fromString(string: String): Option[MailAddress] = {
+      MailboxAddress.fromString(string).orElse(GroupAddress.fromString(string))
+    }
   }
 
   case class MailboxAddress(
@@ -195,11 +199,25 @@ object Imap {
   ) extends MailAddress {
     override def toString: String = {
       val addr = MailAddress.safeString(mailbox._1) + '@' + MailAddress.safeDomain(mailbox._2)
-      displayName.map(MailAddress.safeString).map('[' + _ + "] <" + addr + '>').getOrElse(addr)
+      displayName.map(MailAddress.safeString).map(_ + " <" + addr + '>').getOrElse(addr)
     }
   }
   object MailboxAddress {
-    def fromString(string: String): Option[MailboxAddress] = ???
+    def fromString(string: String): Option[MailboxAddress] = {
+      if (!string.endsWith(">")) return None
+      // TODO: handle quoted strings better and clean up
+      val openBracket = string.lastIndexOf('<')
+      val at = string.indexOf('@')
+      val closeBracket = string.lastIndexOf('>')
+      if (openBracket == -1 || at == -1 || closeBracket == -1 ||
+        openBracket >= at || at >= closeBracket) return None
+      val display = string.substring(0, openBracket).trim match {
+        case "" => None
+        case str => Some(str)
+      }
+      val mailbox = string.substring(openBracket + 1, at).trim -> string.substring(at + 1, closeBracket).trim
+      Some(MailboxAddress(mailbox, display))
+    }
   }
   
   case class GroupAddress(
@@ -207,6 +225,12 @@ object Imap {
     mailboxes: Seq[MailboxAddress]
   ) extends MailAddress {
     override def toString: String = MailAddress.safeString(displayName) + mailboxes.mkString(":", ",", ";")
+  }
+  object GroupAddress {
+    def fromString(string: String): Option[GroupAddress] = {
+      println("Group address to string not yet implemented")
+      ???
+    }
   }
   
   sealed trait ListToken

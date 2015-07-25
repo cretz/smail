@@ -58,24 +58,43 @@ object MailHeaders {
     def toLines(v: T): Seq[String] = valueToString(v).map(name + ": " + _)
     
     def valueFromString(v: String): T = {
+      println("Parsing value " + v + " for parent type " + typeOf[T])
       val ret = typeOf[T] match {
+        case t if t =:= typeOf[Seq[_]] && v.isEmpty =>
+          Seq()
+        case t if t =:= typeOf[Seq[Imap.MailboxAddress]] =>
+          v.split(delimiter).map(singleValueFromString[Imap.MailboxAddress]).toSeq
+        case t if t =:= typeOf[Seq[Imap.MailAddress]] =>
+          v.split(delimiter).map(singleValueFromString[Imap.MailAddress]).toSeq
+        case t if t =:= typeOf[Seq[String]] =>
+          v.split(delimiter).map(singleValueFromString[String]).toSeq
+        case t if t =:= typeOf[Seq[(String, String)]] =>
+          v.split(delimiter).map(singleValueFromString[(String, String)]).toSeq
+        case _ =>
+          singleValueFromString[T](v)
+      }
+      ret.asInstanceOf[T]
+    }
+    
+    def singleValueFromString[U : TypeTag](v: String): U = {
+      println("Parsing value " + v + " for type " + typeOf[U])
+      val ret = typeOf[U] match {
         case t if t =:= typeOf[ZonedDateTime] => ZonedDateTime.parse(v, Imap.mailDateTimeFormat)
         case t if t =:= typeOf[(String, String)] =>
           val index = v.indexOf(delimiter)
           require(index != -1)
           v.take(index) -> v.drop(index + 1)
         case t if t =:= typeOf[Imap.MailboxAddress] =>
-          Imap.MailboxAddress.fromString(v)
+          println("Loading mailbox addr from string: " + v)
+          Imap.MailboxAddress.fromString(v).getOrElse(sys.error("Invalid address: " + v))
         case t if t =:= typeOf[Imap.MailAddress] =>
-          Imap.MailAddress.fromString(v)
-        case t if t =:= typeOf[Seq[_]] =>
-          if (v.isEmpty) Seq()
-          else v.split(delimiter).map(valueFromString)
+          println("Loading mail addr from string: " + v)
+          Imap.MailAddress.fromString(v).getOrElse(sys.error("Invalid address: " + v))
         case t if t =:= typeOf[String] =>
           v
         case t => sys.error("Unrecognized type: " + t)
       }
-      ret.asInstanceOf[T]
+      ret.asInstanceOf[U]
     }
   }
   object Type {

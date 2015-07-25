@@ -422,7 +422,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
     )
     
     // Get the real items we are being asked for
-    val items = fetch.dataItems match {
+    val unorderedItems = fetch.dataItems match {
       case Left(cli.FetchMacro.All) =>
         Seq(cli.FetchDataItem.Flags, cli.FetchDataItem.InternalDate,
           cli.FetchDataItem.Rfc822Size, cli.FetchDataItem.Envelope)
@@ -434,6 +434,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
           cli.FetchDataItem.Envelope, cli.FetchDataItem.NonExtensibleBodyStructure)
       case Right(seq) => seq
     }
+    // Flags have to come at the end because we could affect the flags with the other items
+    val items = unorderedItems.sortWith { case (lhs, _) => lhs != cli.FetchDataItem.Flags }
     
     val msgFutures = getMessagesFromSequenceSet(mailbox, fetch.set, byUid)
     val itemFutures = msgFutures.flatMap { msgs =>
@@ -501,45 +503,61 @@ class HighLevelServerHandler(val server: HighLevelServer)
   }
   
   def messageToFetchItems(msg: Message, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {
-    val items = itemsRequested.map {
-      case cli.FetchDataItem.NonExtensibleBodyStructure =>
-        Future.successful(
-          Seq(ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension)))
-        )
-      case cli.FetchDataItem.Body(part, offset, count) =>
-        fetchBodyPart(msg, part, offset, count).flatMap { ret =>
-          msg.markSeen().map(_ => ret.toSeq)
+    // Grab flags first, because if they change we have to send them at the end if not already requested
+    val flags = msg.flags
+    // We have to fold because some things (like flags) can change as a result of other things
+    val items = itemsRequested.foldLeft(Future.successful(Seq.empty[ser.FetchDataItem])) { case (fut, item) =>
+      fut.flatMap { seq =>
+        val result = item match {
+          case cli.FetchDataItem.NonExtensibleBodyStructure =>
+            Future.successful(
+              Seq(ser.FetchDataItem.NonExtensibleBodyStructure(bodyStructureToImapToken(msg.bodyStructure.sansExtension)))
+            )
+          case cli.FetchDataItem.Body(part, offset, count) =>
+            fetchBodyPart(msg, part, offset, count).flatMap { ret =>
+              msg.markSeen().map(_ => ret.toSeq) 
+            }
+          case cli.FetchDataItem.BodyPeek(part, offset, count) =>
+            fetchBodyPart(msg, part, offset, count).map(_.toSeq)
+          case cli.FetchDataItem.BodyStructure =>
+            Future.successful(Seq(ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure))))
+          case cli.FetchDataItem.Envelope =>
+            Future.successful(Seq(ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope))))
+          case cli.FetchDataItem.Flags =>
+            Future.successful(Seq(ser.FetchDataItem.Flags(msg.flags.toSeq)))
+          case cli.FetchDataItem.InternalDate =>
+            Future.successful(Seq(ser.FetchDataItem.InternalDate(msg.internalDate)))
+          case cli.FetchDataItem.Rfc822 =>
+            msg.getHeaders(Seq.empty, Seq.empty).flatMap { headers =>
+              msg.getText(Seq.empty, None, None).flatMap { text =>
+                msg.markSeen().map { _ =>
+                  Seq(ser.FetchDataItem.Rfc822(headers.mkString("\r\n") + "\r\n\r\n" + text.getOrElse("")))
+                }
+              }
+            }
+          case cli.FetchDataItem.Rfc822Header =>
+            msg.getHeaders(Seq.empty, Seq.empty).map { headers =>
+              Seq(ser.FetchDataItem.Rfc822Header(headers.mkString("\r\n") + "\r\n"))
+            }
+          case cli.FetchDataItem.Rfc822Size =>
+            Future.successful(Seq(ser.FetchDataItem.Rfc822Size(msg.size)))
+          case cli.FetchDataItem.Rfc822Text =>
+            msg.getText(Seq.empty, None, None).flatMap { text =>
+              msg.markSeen().map(_ => text.map(ser.FetchDataItem.Rfc822Text(_)).toSeq)
+            }
+          case cli.FetchDataItem.Uid =>
+            Future.successful(Seq(ser.FetchDataItem.Uid(msg.uid)))
         }
-      case cli.FetchDataItem.BodyPeek(part, offset, count) =>
-        fetchBodyPart(msg, part, offset, count).map(_.toSeq)
-      case cli.FetchDataItem.BodyStructure =>
-        Future.successful(Seq(ser.FetchDataItem.BodyStructure(bodyStructureToImapToken(msg.bodyStructure))))
-      case cli.FetchDataItem.Envelope =>
-        Future.successful(Seq(ser.FetchDataItem.Envelope(envelopeToImapToken(msg.envelope))))
-      case cli.FetchDataItem.Flags =>
-        Future.successful(Seq(ser.FetchDataItem.Flags(msg.flags.toSeq)))
-      case cli.FetchDataItem.InternalDate =>
-        Future.successful(Seq(ser.FetchDataItem.InternalDate(msg.internalDate)))
-      case cli.FetchDataItem.Rfc822 =>
-        msg.getHeaders(Seq.empty, Seq.empty).flatMap { headers =>
-          msg.getText(Seq.empty, None, None).map { text =>
-            Seq(ser.FetchDataItem.Rfc822(headers.mkString("\r\n") + "\r\n\r\n" + text.getOrElse("")))
-          }
-        }
-      case cli.FetchDataItem.Rfc822Header =>
-        msg.getHeaders(Seq.empty, Seq.empty).map { headers =>
-          Seq(ser.FetchDataItem.Rfc822Header(headers.mkString("\r\n") + "\r\n"))
-        }
-      case cli.FetchDataItem.Rfc822Size =>
-        Future.successful(Seq(ser.FetchDataItem.Rfc822Size(msg.size)))
-      case cli.FetchDataItem.Rfc822Text =>
-        msg.getText(Seq.empty, None, None).map { text =>
-          text.map(ser.FetchDataItem.Rfc822Text(_)).toSeq
-        }
-      case cli.FetchDataItem.Uid =>
-        Future.successful(Seq(ser.FetchDataItem.Uid(msg.uid)))
+        // Combine with previous
+        result.map(seq ++ _)
+      }
     }
-    Future.sequence(items).map(_.flatten)
+    // If flags weren't asked for but they did change, we need to add it to the end
+    if (itemsRequested.lastOption == Some(cli.FetchDataItem.Flags)) items
+    else items.map { items =>
+      if (msg.flags == flags) items
+      else items :+ ser.FetchDataItem.Flags(msg.flags.toSeq)
+    }
   }
   
   def fetchBodyPart(
@@ -565,12 +583,16 @@ class HighLevelServerHandler(val server: HighLevelServer)
           headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
         }
       case Imap.BodyPart.HeaderFields(nums, fields) =>
-        Future.sequence(fields.map(msg.getHeader(nums, _))).map(_.flatten).map {
-          headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
+        // Have to remove duplicate field names per Dovecot tests
+        Future.sequence(fields.distinct.map(msg.getHeader(nums, _))).map(_.flatten).map { lines =>
+          // Per Dovecot tests, you still return an empty set here
+          val headerLines = headerLinesToStr(lines).getOrElse("") + "\r\n"
+          Some(ser.FetchDataItem.Body(part, headerLines, offset))
         }
       case Imap.BodyPart.HeaderFieldsNot(nums, fields) =>
-        msg.getHeaders(nums, fields).map {
-          headerLinesToStr(_).map(s => ser.FetchDataItem.Body(part, s, offset))
+        msg.getHeaders(nums, fields).map { lines =>
+          val headerLines = headerLinesToStr(lines).getOrElse("") + "\r\n"
+          Some(ser.FetchDataItem.Body(part, headerLines, offset))
         }
       case Imap.BodyPart.Mime(nums) =>
         msg.getMime(nums).map {

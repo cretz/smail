@@ -235,9 +235,8 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
     case Seq(ImapToken.Str(ci"ALL", _)) => Some(Left(FetchMacro.All))
     case Seq(ImapToken.Str(ci"FAST", _)) => Some(Left(FetchMacro.Fast))
     case Seq(ImapToken.Str(ci"FULL", _)) => Some(Left(FetchMacro.Full))
-    case Seq(token: ImapToken.Str) => fetchDataItemsFromTokens(Seq(token)).map(Right(_))
     case Seq(ImapToken.List('(', tokens)) => fetchDataItemsFromTokens(tokens).map(Right(_))
-    case _ => None
+    case _ => fetchDataItemsFromTokens(tokens).map(Right(_))
   }
   
   def fetchDataItemsFromTokens(tokens: Seq[ImapToken]): Option[Seq[FetchDataItem]] = {

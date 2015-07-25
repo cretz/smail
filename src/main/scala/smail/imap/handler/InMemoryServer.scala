@@ -319,10 +319,11 @@ object InMemoryServer {
       if (headersAndBody.length != 2) return Future.successful(Some("Can't find headers and body"))
       // Parse headers (only the ones we can for now)
       val headers: Seq[(MailHeaders.Type[Any], Any)] = (headersAndBody(0).split("\r\n").flatMap { header =>
+        println("PARSING HEADER: " + header)
         val colonIndex = header.indexOf(":")
         if (colonIndex == -1) None
         else MailHeaders.typeFromString(header.substring(0, colonIndex)).flatMap { typ =>
-          val t = Try(typ.valueFromString(header.substring(colonIndex + 1)))
+          println("Result of " + header + ": " + Try(typ.valueFromString(header.substring(colonIndex + 1).trim)))
           Try(typ.valueFromString(header.substring(colonIndex + 1).trim)).toOption.map { v =>
             typ.asInstanceOf[MailHeaders.Type[Any]] -> v
           }
@@ -487,21 +488,37 @@ object InMemoryServer {
       flags += Imap.Flag.Seen
       flags -= Imap.Flag.Recent
     }
-    def getPart(part: Seq[Int]): Future[Option[String]] = { println("NO3"); ??? }
-    def getHeader(part: Seq[Int], name: String): Future[Seq[String]] =
+    
+    def getPart(part: Seq[Int]): Future[Option[String]] = {
+      // Empty means all
+      if (part.isEmpty) {
+        Future.successful(Some(headers.toString() + "\r\n\r\n" + body))
+      } else {
+        println("Not implemented yet for part: " + part)
+        ???
+      }
+    }
+    
+    def getHeader(part: Seq[Int], name: String): Future[Seq[String]] = {
       if (!part.isEmpty) { println("NO4"); ??? }
       else Future.successful(MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_)))
+    }
+      
     def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Future[Seq[String]] = {
       val not = notIncluding.flatMap(MailHeaders.typeFromString(_).toSeq)
       Future.successful(headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq)
     }
+    
     def getMime(part: Seq[Int]): Future[Option[String]] = { println("NO5"); ??? }
-    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Future[Option[String]] =
+    
+    def getText(part: Seq[Int], offset: Option[Int], count: Option[Int]): Future[Option[String]] = {
       if (!part.isEmpty) { println("NO5"); ??? }
       else if (offset.isEmpty) Future.successful(Some(body))
+      else if (offset.get >= body.length) Future.successful(Some(""))
       else Future.successful(
-        Some(body.substring(offset.get, Math.min(body.length, count.getOrElse(body.length) - offset.get)))
+        Some(body.substring(offset.get, Math.min(body.length, offset.get + count.getOrElse(body.length))))
       )
+    }
       
     def alterFlags(flags: Set[Imap.Flag], operation: Imap.FlagOperation): Future[Unit] = {
       // TODO: We need to ignore keyword flags until we are ready to support some form of PERMANENTFLAGS
