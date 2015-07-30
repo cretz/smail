@@ -1,4 +1,5 @@
-package smail.imap
+package smail
+package imap
 package handler
 
 import scala.collection.immutable.NumericRange
@@ -7,8 +8,8 @@ import java.util.regex.Pattern
 import scala.annotation.tailrec
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext
-import java.time.ZonedDateTime
 import smail.Util
+import java.time.OffsetDateTime
 
 class HighLevelServerHandler(val server: HighLevelServer)
     (implicit val execCtx: ExecutionContext) extends ServerHandler {
@@ -289,7 +290,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
     val startsAtRoot = server.hierarchyRoots.exists(s => reference.startsWith(s) || mailbox.startsWith(s))
     val combined =
       if (server.hierarchyRoots.exists(mailbox.startsWith) || reference == "") mailbox
-      else if (delim.isDefined) reference + delim.get + mailbox
+      else if (delim.isDefined && !reference.endsWith(delim.get)) reference + delim.get + mailbox
       else reference + mailbox
     val sansPrefix = delim.map(combined.stripPrefix).getOrElse(combined)
     val pieces = delim match {
@@ -333,7 +334,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
     mailbox: String,
     message: String,
     flags: Seq[Imap.Flag],
-    date: Option[ZonedDateTime]
+    date: Option[OffsetDateTime]
   ): Future[Seq[ser]] = {
     server.get(mailbox).flatMap {
       case None =>
@@ -341,7 +342,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
           Seq(ser.No("Mailbox " + mailbox + " does not exist", Some(tag), Some(ser.StatusResponseCode.TryCreate)))
         )
       case Some(mailbox) =>
-        mailbox.addMessage(message, flags.toSet, date.getOrElse(ZonedDateTime.now())).map {
+        mailbox.addMessage(message, flags.toSet, date.getOrElse(OffsetDateTime.now())).map {
           case None =>
             // Per the dovecot tests, we return the message count here
             Seq(
@@ -385,9 +386,8 @@ class HighLevelServerHandler(val server: HighLevelServer)
     if (charset.isDefined) return Future.successful(Seq(ser.No("Charsets not supported", Some(tag))))
     val prefix = if (returnUids) "UID " else ""
     server.currentMailbox.map({ mailbox =>
-      mailbox.search(criteria, returnUids).map {
-        case Seq() => Seq(ser.Ok(prefix + "SEARCH completed", Some(tag)))
-        case ids => Seq(ser.Search(ids), ser.Ok(prefix + "SEARCH completed", Some(tag)))
+      mailbox.search(criteria, returnUids).map { ids =>
+        Seq(ser.Search(ids), ser.Ok(prefix + "SEARCH completed", Some(tag)))
       }
     }).getOrElse(Future.successful(Seq(ser.Bad("No mailbox selected", Some(tag)))))
   }
@@ -409,7 +409,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
       mailbox: Mailbox,
       set: Imap.SequenceSet,
       byUid: Boolean
-  ): Future[Seq[(BigInt, Message)]] = {
+  ): Future[Seq[(BigInt, MailboxMessage)]] = {
     val msgFutures = getRangesFromSequenceSet(set).map { range =>
       mailbox.getMessages(range._1, range._2, byUid)
     }
@@ -502,8 +502,9 @@ class HighLevelServerHandler(val server: HighLevelServer)
     case cli.UidCommand.Search(cli.Search(_, criteria, charset)) => handleSearch(tag, criteria, charset, true)
   }
   
-  def messageToFetchItems(msg: Message, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {
+  def messageToFetchItems(msg: MailboxMessage, itemsRequested: Seq[cli.FetchDataItem]): Future[Seq[ser.FetchDataItem]] = {
     // Grab flags first, because if they change we have to send them at the end if not already requested
+    // TODO: for now we ignore non-standard flags
     val flags = msg.flags
     // We have to fold because some things (like flags) can change as a result of other things
     val items = itemsRequested.foldLeft(Future.successful(Seq.empty[ser.FetchDataItem])) { case (fut, item) =>
@@ -561,7 +562,7 @@ class HighLevelServerHandler(val server: HighLevelServer)
   }
   
   def fetchBodyPart(
-    msg: HighLevelServer.Message,
+    msg: MailboxMessage,
     part: Imap.BodyPart,
     offset: Option[Int] = None,
     count: Option[Int] = None
@@ -657,31 +658,39 @@ class HighLevelServerHandler(val server: HighLevelServer)
   def envelopeToImapToken(env: Imap.Envelope): ImapToken.List = {
     import ImapToken._
     @inline
-    def addrsOrNil(addrs: Seq[Imap.MailAddress]): ImapToken =
-      if (addrs.isEmpty) Nil else List('(', addrs.map(mailAddressToImapToken))
+    def addrsOrNil(addrs: Seq[Message.Address]): ImapToken =
+      if (addrs.isEmpty) Nil
+      else List('(', addrs.flatMap(mailAddressToImapTokens))
     List('(', Seq(
-      env.date.map(d => Str(Imap.mailDateTimeFormat.format(d), true)).getOrElse(Nil),
+      env.date.map(d => Str(Message.DateTimeFormat.format(d), true)).getOrElse(Nil),
       env.subject.map(Str(_, true)).getOrElse(Nil),
       addrsOrNil(env.from),
-      addrsOrNil(env.sender),
-      addrsOrNil(env.replyTo),
+      addrsOrNil(if (env.sender.isEmpty) env.from else env.sender),
+      addrsOrNil(if (env.replyTo.isEmpty) env.from else env.replyTo),
       addrsOrNil(env.to),
       addrsOrNil(env.cc),
       addrsOrNil(env.bcc),
-      if (env.inReplyTo.isEmpty) Nil else List('(', env.inReplyTo.map(m => Str(m._1 + "@" + m._2, true))),
-      env.messageId.map(m => Str(m._1 + "@" + m._2, true)).getOrElse(Nil)
+      if (env.inReplyTo.isEmpty) Nil else Str(env.inReplyTo.mkString(" "), true),
+      env.messageId.map(m => Str(m.toString, true)).getOrElse(Nil)
     ))
   }
   
-  def mailAddressToImapToken(addr: Imap.MailAddress): ImapToken.List = {
+  def mailAddressToImapTokens(addr: Message.Address): Seq[ImapToken] = {
     import ImapToken._
     addr match {
-      case Imap.MailboxAddress((mailbox, host), personalName) =>
-        // Ignore SMTP "at-domain-list"
-        List('(', Seq(personalName.map(Str(_, true)).getOrElse(Nil), Nil, Str(mailbox, true), Str(host, true)))
-      case Imap.GroupAddress(display, mailboxes) =>
-        List('(', Str(display, true) +:
-          mailboxes.map(mailAddressToImapToken) :+ List('(', Seq(Str(display, true), Nil, Nil, Nil)))
+      case Message.Address.Mailbox((mailbox, host), personalName, atDomainList) =>
+        val domainListToken =
+          if (atDomainList.isEmpty) Nil
+          else Str(atDomainList.map('@' + _).mkString(","), true)
+        Seq(
+          List('(',
+            Seq(personalName.map(Str(_, true)).getOrElse(Nil), domainListToken, Str(mailbox, true), Str(host, true))
+          )
+        )
+      case Message.Address.Group(display, mailboxes) =>
+        List('(', Seq(Nil, Nil, Str(display, true), Nil)) +:
+          mailboxes.flatMap(mailAddressToImapTokens) :+
+          List('(', Seq(Nil, Nil, Nil, Nil))
     }
   }
   

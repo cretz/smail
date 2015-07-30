@@ -1,6 +1,6 @@
 package smail.imap
 
-import java.time.ZonedDateTime
+import java.time.OffsetDateTime
 
 sealed trait ServerResponse
 
@@ -104,7 +104,7 @@ object ServerResponse {
     // TODO: Get more typesafe here
     case class Envelope(list: ImapToken.List) extends FetchDataItem
     case class Flags(flags: Seq[Imap.Flag]) extends FetchDataItem
-    case class InternalDate(date: ZonedDateTime) extends FetchDataItem
+    case class InternalDate(date: OffsetDateTime) extends FetchDataItem
     case class Rfc822(contents: String) extends FetchDataItem
     case class Rfc822Header(contents: String) extends FetchDataItem
     case class Rfc822Size(size: BigInt) extends FetchDataItem

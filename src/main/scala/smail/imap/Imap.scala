@@ -1,16 +1,15 @@
-package smail.imap
+package smail
+package imap
 
 import java.time.format.DateTimeFormatter
-import java.time.ZonedDateTime
 import java.time.LocalDate
+import scala.annotation.tailrec
+import scala.util.Try
+import java.time.OffsetDateTime
 
 object Imap {
   //DQUOTE date-day-fixed "-" date-month "-" date-year SP time SP zone DQUOTE
-  lazy val dateTimeFormat = DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm:ss Z")
-  //date-day "-" date-month "-" date-year
-  lazy val dateFormat = DateTimeFormatter.ofPattern("dd-MMM-yyyy")
-  //RFC2822 - 3.3
-  lazy val mailDateTimeFormat = DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm:ss Z")
+  lazy val DateTimeFormat = DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm:ss Z")
   
   case class SequenceSet(items: Seq[SequenceSetItem]) {
     def contains(value: BigInt): Boolean = items.exists(_.contains(value))
@@ -22,6 +21,16 @@ object Imap {
     def contains(value: BigInt): Boolean =
       (!low.isInstanceOf[SequenceNumberLiteral] || low.asInstanceOf[SequenceNumberLiteral].value <= value) &&
         (!high.isInstanceOf[SequenceNumberLiteral] || high.asInstanceOf[SequenceNumberLiteral].value >= value)
+    
+    // We need this due to the fact that sequences can be out of order
+    def normalize(): SequenceRange = low -> high match {
+      case (Imap.SequenceNumberAll, _) =>
+        copy(low = high, high = low)
+      case (Imap.SequenceNumberLiteral(lowNum), Imap.SequenceNumberLiteral(highNum)) if highNum < lowNum =>
+        copy(low = high, high = low)
+      case _ =>
+        this
+    }
   }
   sealed trait SequenceNumber extends SequenceSetItem {
     def valueOption: Option[BigInt]
@@ -37,6 +46,8 @@ object Imap {
   
   sealed trait Flag
   object Flag {
+    val StandardFlags: Set[Flag] = Set(Answered, Flagged, Deleted, Seen, Draft, Recent)
+    
     case object Answered extends Flag {
       override def toString = "\\Answered"
     }
@@ -158,80 +169,74 @@ object Imap {
   }
   
   case class Envelope(
-    date: Option[ZonedDateTime] = None,
+    date: Option[OffsetDateTime] = None,
     subject: Option[String] = None,
-    from: Seq[MailAddress] = Seq.empty,
-    sender: Seq[MailAddress] = Seq.empty,
-    replyTo: Seq[MailAddress] = Seq.empty,
-    to: Seq[MailAddress] = Seq.empty,
-    cc: Seq[MailAddress] = Seq.empty,
-    bcc: Seq[MailAddress] = Seq.empty,
-    inReplyTo: Seq[(String, String)] = Seq.empty,
-    messageId: Option[(String, String)] = None
+    from: Seq[Message.Address] = Seq.empty,
+    sender: Seq[Message.Address] = Seq.empty,
+    replyTo: Seq[Message.Address] = Seq.empty,
+    to: Seq[Message.Address] = Seq.empty,
+    cc: Seq[Message.Address] = Seq.empty,
+    bcc: Seq[Message.Address] = Seq.empty,
+    inReplyTo: Seq[Message.MsgId] = Seq.empty,
+    messageId: Option[Message.MsgId] = None
   )
   
-  sealed trait MailAddress {
-    override def toString: String = ???
-  }
-  object MailAddress {
-    def safeString(string: String): String = {
-      // Only if the string contains a slash, double quote, or a space do we want to double quote it
-      val result = string.replace("\\", "\\\\").replace("\"","\\\"")
-      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
-      else '"' + result + '"'
-    }
-
-    def safeDomain(string: String): String = {
-      // Only if the string contains a bracket, double quote, or a space do we want to double quote it
-      val result = string.replace("\\", "\\\\").replace("[","\\[").replace("]","\\]")
-      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
-      else '[' + result + ']'
-    }
-    
-    def fromString(string: String): Option[MailAddress] = {
-      MailboxAddress.fromString(string).orElse(GroupAddress.fromString(string))
-    }
-  }
-
-  case class MailboxAddress(
-    mailbox: (String, String),
-    displayName: Option[String] = None
-  ) extends MailAddress {
-    override def toString: String = {
-      val addr = MailAddress.safeString(mailbox._1) + '@' + MailAddress.safeDomain(mailbox._2)
-      displayName.map(MailAddress.safeString).map(_ + " <" + addr + '>').getOrElse(addr)
-    }
-  }
-  object MailboxAddress {
-    def fromString(string: String): Option[MailboxAddress] = {
-      if (!string.endsWith(">")) return None
-      // TODO: handle quoted strings better and clean up
-      val openBracket = string.lastIndexOf('<')
-      val at = string.indexOf('@')
-      val closeBracket = string.lastIndexOf('>')
-      if (openBracket == -1 || at == -1 || closeBracket == -1 ||
-        openBracket >= at || at >= closeBracket) return None
-      val display = string.substring(0, openBracket).trim match {
-        case "" => None
-        case str => Some(str)
-      }
-      val mailbox = string.substring(openBracket + 1, at).trim -> string.substring(at + 1, closeBracket).trim
-      Some(MailboxAddress(mailbox, display))
-    }
-  }
-  
-  case class GroupAddress(
-    displayName: String,
-    mailboxes: Seq[MailboxAddress]
-  ) extends MailAddress {
-    override def toString: String = MailAddress.safeString(displayName) + mailboxes.mkString(":", ",", ";")
-  }
-  object GroupAddress {
-    def fromString(string: String): Option[GroupAddress] = {
-      println("Group address to string not yet implemented")
-      ???
-    }
-  }
+//  sealed trait MailAddress {
+//    override def toString: String = ???
+//  }
+//  object MailAddress {
+//    def safeString(string: String): String = {
+//      // Only if the string contains a slash, double quote, or a space do we want to double quote it
+//      val result = string.replace("\\", "\\\\").replace("\"","\\\"")
+//      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
+//      else '"' + result + '"'
+//    }
+//
+//    def safeDomain(string: String): String = {
+//      // Only if the string contains a bracket, double quote, or a space do we want to double quote it
+//      val result = string.replace("\\", "\\\\").replace("[","\\[").replace("]","\\]")
+//      if (result.length > 0 && result.length == string.length && result.indexOf(' ') == -1) result
+//      else '[' + result + ']'
+//    }
+//    
+//    def fromString(string: String): Try[MailAddress] =
+//      new MessageParser(string).Address.run()
+//    
+//    def multipleFromString(string: String): Try[Seq[MailAddress]] =
+//      new MessageParser(string).AddressList.run()
+//  }
+//
+//  case class MailboxAddress(
+//    mailbox: (String, String),
+//    displayName: Option[String] = None,
+//    atDomainList: Seq[String] = Seq.empty
+//  ) extends MailAddress {
+//    override def toString: String = {
+//      val prefix =
+//        if (atDomainList.isEmpty) ""
+//        else atDomainList.map('@' + _).mkString(",") + ':'
+//      val addr = prefix + MailAddress.safeString(mailbox._1) + '@' + MailAddress.safeDomain(mailbox._2)
+//      displayName.map(MailAddress.safeString).map(_ + " <" + addr + '>').getOrElse(addr)
+//    }
+//  }
+//  object MailboxAddress {
+//    def fromString(string: String): Try[MailboxAddress] =
+//      new MessageParser(string).Mailbox.run()
+//    
+//    def multipleFromString(string: String): Try[Seq[MailboxAddress]] =
+//      new MessageParser(string).MailboxList.run()
+//  }
+//  
+//  case class GroupAddress(
+//    displayName: String,
+//    mailboxes: Seq[MailboxAddress]
+//  ) extends MailAddress {
+//    override def toString: String = MailAddress.safeString(displayName) + mailboxes.mkString(":", ",", ";")
+//  }
+//  object GroupAddress {
+//    def fromString(string: String): Try[GroupAddress] =
+//      new MessageParser(string).Group.run()
+//  }
   
   sealed trait ListToken
   object ListToken {

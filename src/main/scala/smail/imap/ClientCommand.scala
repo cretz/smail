@@ -1,6 +1,6 @@
 package smail.imap
 
-import java.time.ZonedDateTime
+import java.time.OffsetDateTime
 import java.time.LocalDate
 
 sealed trait ClientCommand {
@@ -56,7 +56,7 @@ object ClientCommand {
     mailbox: String,
     message: String,
     flags: Seq[Imap.Flag] = Seq.empty,
-    date: Option[ZonedDateTime] = None
+    date: Option[OffsetDateTime] = None
   ) extends ClientCommand with AuthenticatedState
   
   case class Check(tag: String) extends ClientCommand with SelectedState

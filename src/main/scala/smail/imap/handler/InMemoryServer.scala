@@ -1,11 +1,15 @@
-package smail.imap
+package smail
+package imap
 package handler
 
-import java.time.ZonedDateTime
+import java.time.OffsetDateTime
 import scala.concurrent.Future
 import java.util.regex.Pattern
 import smail.Util
 import scala.util.Try
+import scala.reflect.ClassTag
+import scala.util.Failure
+import scala.util.Success
 
 // Basically only for testing
 class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
@@ -77,6 +81,7 @@ class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
   }
   
   def create(name: String, item: InMemoryFolder): Option[String] = {
+    println("ALL NAMES PRE CREATE: " + allFolderNames("", currentUser.get.folders.values).keys.toSeq)
     // If it ends with the separator, it's just a folder, otherwise it's a mailbox
     val isFolder = name.endsWith(hierarchyDelimiter.get)
     // Trim it and split it across the delimiter
@@ -91,7 +96,11 @@ class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
     }
     // Create all needed parents to satisfy this
     val parent = pieces.dropRight(1).foldLeft(Option.empty[InMemoryFolder])({ case (parent, name) =>
-      Some(parent.flatMap(_._children.find(_.name == name)).getOrElse {
+      val foundChild = parent match {
+        case Some(parent) => parent._children.find(_.name == name)
+        case None => currentUser.get.folders.get(name)
+      }
+      Some(foundChild.getOrElse {
         val child = new InMemoryFolder(name)
         parent match {
           case Some(parent) =>
@@ -185,6 +194,7 @@ class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
         allFolderNames("", currentUser.get.folders.values).filterKeys(currentUser.get.subscribed.contains)
       } else if (startsAtRoot || currentMailbox.isEmpty) allFolderNames("", currentUser.get.folders.values)
       else allFolderNames("", Iterable(currentMailbox.get))
+    println("ALL FOLDER NAMES: " + allFolders.keys.toSeq)
     
     // Go over each token set fetching
     val regexString = tokens.foldLeft(Pattern.quote(hierarchyDelimiter.get)) { case (regex, token) =>
@@ -207,7 +217,7 @@ class InMemoryServer(val state: InMemoryServer.State) extends HighLevelServer {
       val attrs = 
         if (folder.isInstanceOf[InMemoryMailbox]) Seq.empty[Imap.ListAttribute]
         else Seq(Imap.ListAttribute.NoSelect)
-      ListItem(name, attrs)
+      ListItem(name.stripPrefix("/"), attrs)
     }).toSeq)
   }
   
@@ -269,7 +279,7 @@ object InMemoryServer {
     private var nameParam: String,
     @volatile var messages: Seq[InMemoryMessage] = Seq.empty,
     @volatile var flags: Set[Imap.Flag] = Set.empty,
-    @volatile var permanentFlags: Set[Imap.Flag] = Set.empty,
+    @volatile var permanentFlags: Set[Imap.Flag] = Imap.Flag.StandardFlags,
     @volatile var uidValidity: BigInt = System.currentTimeMillis,
     private var childrenParam: Seq[InMemoryFolder] = Seq.empty
   ) extends InMemoryFolder(nameParam, childrenParam) with Mailbox {
@@ -308,35 +318,23 @@ object InMemoryServer {
       (properStart to properEnd.getOrElse(messages.size)).flatMap(i => lifted(i.toInt - 1).map(i -> _))
     }
     
-    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, Message)]] = {
+    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, MailboxMessage)]] = {
       Future.successful(getInMemoryMessages(start, end, byUid))
     }
     
-    def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]] = {
-      // Too keep this test server simple we're just gonna get all headers until first blank line...
-      //  no multipart support for now
-      val headersAndBody = message.split("\r\n\r\n", 2)
-      if (headersAndBody.length != 2) return Future.successful(Some("Can't find headers and body"))
-      // Parse headers (only the ones we can for now)
-      val headers: Seq[(MailHeaders.Type[Any], Any)] = (headersAndBody(0).split("\r\n").flatMap { header =>
-        println("PARSING HEADER: " + header)
-        val colonIndex = header.indexOf(":")
-        if (colonIndex == -1) None
-        else MailHeaders.typeFromString(header.substring(0, colonIndex)).flatMap { typ =>
-          println("Result of " + header + ": " + Try(typ.valueFromString(header.substring(colonIndex + 1).trim)))
-          Try(typ.valueFromString(header.substring(colonIndex + 1).trim)).toOption.map { v =>
-            typ.asInstanceOf[MailHeaders.Type[Any]] -> v
-          }
-        }
-      })
-      // Add message w/ body, flags, and overridden date
+    def addMessage(message: String, flags: Set[Imap.Flag], date: OffsetDateTime): Future[Option[String]] = {
+      val msg: Message = Message.fromString(message) match {
+        case Failure(t) => return Future.failed(t)
+        case Success(v) => v
+      }
       addMessage(
         new InMemoryMessage(
           mailbox = this,
           uid = nextUid,
           flags = flags,
-          headers = headers.foldLeft(MailHeaders.InMemory())(_ + _) + (MailHeaders.Date -> date),
-          body = headersAndBody(1)
+          headers = msg.fields,
+          body = msg.body.getOrElse(""),
+          internalDate = date
         )
       )
       Future.successful(None)
@@ -378,29 +376,40 @@ object InMemoryServer {
     
     def criterionToFilter(criterion: Imap.SearchCriterion): (InMemoryMessage) => Boolean = {
       import Imap.SearchCriterion._
+      def toStringCiContains(toSearchFor: String, obj: Object): Boolean =
+        obj.toString.toLowerCase.contains(toSearchFor.toLowerCase)
+      def headerContainsCi[T <: Message.Field : ClassTag](
+        toSearchFor: String
+      ): (InMemoryMessage => Boolean) = {
+        msg => msg.headerList[T].exists(h => toStringCiContains(toSearchFor, h.valueToString()))
+      }
       criterion match {
-        case SequenceSet(set) => msg => set.contains(msg.uid)
+        case SequenceSet(set) => set match {
+          case Imap.SequenceSet(Seq(Imap.SequenceNumberAll)) =>
+            // Special case where only the last one matches
+            msg => messages.lastOption == Some(msg)
+          case _ =>
+            msg => set.contains(messages.indexOf(msg) + 1)
+        }
         case All => _ => true
         case Answered => _.flags.contains(Imap.Flag.Answered)
-        case Bcc(bcc) =>
-          _.headers(MailHeaders.Bcc).map(_.exists(_.toString.contains(bcc))).getOrElse(false)
+        case Bcc(bcc) => headerContainsCi[Message.Field.Bcc](bcc)
         case Before(date) => _.internalDate.toLocalDate.isBefore(date)
-        case Body(str) => _.body.contains(str)
-        case Cc(cc) =>
-          _.headers(MailHeaders.Cc).map(_.exists(_.toString.contains(cc))).getOrElse(false)
+        case Body(str) => msg => toStringCiContains(str, msg.body)
+        case Cc(cc) => headerContainsCi[Message.Field.Cc](cc)
         case Deleted => _.flags.contains(Imap.Flag.Deleted)
         case Draft => _.flags.contains(Imap.Flag.Draft)
         case Flagged => _.flags.contains(Imap.Flag.Flagged)
-        case From(from) =>
-          _.headers(MailHeaders.From).map(_.exists(_.toString.contains(from))).getOrElse(false)
+        case From(from) => headerContainsCi[Message.Field.From](from)
         case Header(name, v) =>
-          msg => MailHeaders.typeFromString(name).flatMap(typ =>
-            msg.headers(typ).map(typ.asInstanceOf[MailHeaders.Type[Any]].valueToString).
-              map(_.exists(_.contains(v)))
-          ).getOrElse(false)
+          msg => msg.headers.exists(h =>
+            h.prefix.equalsIgnoreCase(name) && toStringCiContains(v, h.valueToString())
+          )
         case Keyword(flag) => _.flags.contains(flag)
         case Larger(size) => _.size > size
-        case New => msg => msg.flags.contains(Imap.Flag.Recent) && !msg.flags.contains(Imap.Flag.Seen)
+        case New =>
+          println("MSGS: " + messages.map(_.flags))
+          msg => msg.flags.contains(Imap.Flag.Recent) && !msg.flags.contains(Imap.Flag.Seen)
         case Not(crit) =>
           val filter = criterionToFilter(crit)
           !filter(_)
@@ -413,20 +422,33 @@ object InMemoryServer {
         case Recent => _.flags.contains(Imap.Flag.Recent)
         case Seen => _.flags.contains(Imap.Flag.Seen)
         case SentBefore(date) =>
-          _.headers(MailHeaders.Date).map(_.toLocalDate.isBefore(date)).getOrElse(false)
+          _.headerList[Message.Field.OrigDate].exists(_.value.toLocalDate.isBefore(date))
         case SentOn(date) =>
-          _.headers(MailHeaders.Date).map(_.toLocalDate.equals(date)).getOrElse(false)
+          _.headerList[Message.Field.OrigDate].exists(_.value.toLocalDate.equals(date))
         case SentSince(date) =>
-          _.headers(MailHeaders.Date).map(!_.toLocalDate.isBefore(date)).getOrElse(false)
+          _.headerList[Message.Field.OrigDate].exists(!_.value.toLocalDate.isBefore(date))
         case Since(date) => !_.internalDate.toLocalDate.isBefore(date)
         case Smaller(size) => _.size < size
         case Subject(str) =>
-          _.headers(MailHeaders.Subject).map(_.contains(str)).getOrElse(false)
+          headerContainsCi[Message.Field.Subject](str)
         case Text(str) =>
-          msg => msg.body.contains(str) || msg.headers.toString.contains(str)
-        case To(to) =>
-          _.headers(MailHeaders.To).map(_.exists(_.toString.contains(to))).getOrElse(false)
-        case Uid(set) => msg => set.contains(msg.uid)
+          msg => toStringCiContains(str, msg.body) || { val f = headerContainsCi[Message.Field](str); f(msg) }
+        case To(to) => headerContainsCi[Message.Field.To](to)
+        case Uid(set) => set match {
+          case Imap.SequenceSet(Seq(Imap.SequenceNumberAll)) =>
+            // Special case where only the last one matches
+            msg => messages.lastOption == Some(msg)
+          case _ => set.items.lastOption match {
+            case Some(
+              Imap.SequenceRange(Imap.SequenceNumberLiteral(low), Imap.SequenceNumberAll)
+            ) if !messages.exists(_.uid >= low) =>
+              // Special case where we have to include the last one
+              msg => messages.lastOption == Some(msg)
+            case _ =>
+              msg => set.contains(msg.uid)
+          }
+            
+        }
         case Unanswered => !_.flags.contains(Imap.Flag.Answered)
         case Undeleted => !_.flags.contains(Imap.Flag.Deleted)
         case Undraft => !_.flags.contains(Imap.Flag.Draft)
@@ -441,9 +463,16 @@ object InMemoryServer {
     @volatile var mailbox: InMemoryMailbox,
     @volatile var uid: BigInt,
     @volatile var flags: Set[Imap.Flag],
-    @volatile var headers: MailHeaders,
-    @volatile var body: String
-  ) extends Message {
+    @volatile var headers: Seq[Message.Field],
+    @volatile var body: String,
+    val internalDate: OffsetDateTime = OffsetDateTime.now()
+  ) extends MailboxMessage {
+    
+    def headerList[T <: Message.Field : ClassTag]: Seq[T] = {
+      val cls = implicitly[ClassTag[T]].runtimeClass
+      headers.filter(h => cls.isAssignableFrom(h.getClass)).map(_.asInstanceOf[T])
+    }
+    
     def bodyStructure: Imap.BodyStructure = {
       // Just single part for now...
       Imap.BodyStructureSingle(
@@ -467,20 +496,20 @@ object InMemoryServer {
     
     def envelope: Imap.Envelope = {
       Imap.Envelope(
-        date = headers(MailHeaders.Date),
-        subject = headers(MailHeaders.Subject),
-        from = headers(MailHeaders.From).getOrElse(Seq.empty),
-        sender = headers(MailHeaders.Sender).toSeq,
-        replyTo = headers(MailHeaders.From).getOrElse(Seq.empty),
-        to = headers(MailHeaders.To).getOrElse(Seq.empty),
-        cc = headers(MailHeaders.Cc).getOrElse(Seq.empty),
-        bcc = headers(MailHeaders.Bcc).getOrElse(Seq.empty),
-        inReplyTo = headers(MailHeaders.InReplyTo).getOrElse(Seq.empty),
-        messageId = headers(MailHeaders.MessageId)
+        date = headerList[Message.Field.OrigDate].headOption.map(_.value),
+        // TODO: what about multiple subjects?
+        subject = headerList[Message.Field.Subject].headOption.map(_.value),
+        from = headerList[Message.Field.From].flatMap(_.value),
+        sender = headerList[Message.Field.Sender].map(_.value),
+        replyTo = headerList[Message.Field.ReplyTo].flatMap(_.value),
+        to = headerList[Message.Field.To].flatMap(_.value),
+        cc = headerList[Message.Field.Cc].flatMap(_.value),
+        bcc = headerList[Message.Field.Bcc].flatMap(_.value),
+        inReplyTo = headerList[Message.Field.InReplyTo].flatMap(_.value),
+        messageId = headerList[Message.Field.MessageId].headOption.map(_.value)
       )
     }
     
-    def internalDate: ZonedDateTime = headers(MailHeaders.Date).getOrElse(sys.error("Can't find date"))
     // TODO: confirm whether this is just body or not
     def size: BigInt = body.length
     
@@ -492,7 +521,7 @@ object InMemoryServer {
     def getPart(part: Seq[Int]): Future[Option[String]] = {
       // Empty means all
       if (part.isEmpty) {
-        Future.successful(Some(headers.toString() + "\r\n\r\n" + body))
+        Future.successful(Some(headers.mkString("\r\n") + "\r\n\r\n" + body))
       } else {
         println("Not implemented yet for part: " + part)
         ???
@@ -501,12 +530,12 @@ object InMemoryServer {
     
     def getHeader(part: Seq[Int], name: String): Future[Seq[String]] = {
       if (!part.isEmpty) { println("NO4"); ??? }
-      else Future.successful(MailHeaders.typeFromString(name).toSeq.flatMap(headers.lines(_)))
+      else Future.successful(headers.filter(_.prefix.equalsIgnoreCase(name)).map(_.toString))
     }
       
     def getHeaders(part: Seq[Int], notIncluding: Seq[String]): Future[Seq[String]] = {
-      val not = notIncluding.flatMap(MailHeaders.typeFromString(_).toSeq)
-      Future.successful(headers.headers.keys.filterNot(not.contains).flatMap(headers.lines(_)).toSeq)
+      val ret = headers.filterNot(h => notIncluding.exists(_.equalsIgnoreCase(h.prefix)))
+      Future.successful(ret.map(_.toString))
     }
     
     def getMime(part: Seq[Int]): Future[Option[String]] = { println("NO5"); ??? }
@@ -522,9 +551,13 @@ object InMemoryServer {
       
     def alterFlags(flags: Set[Imap.Flag], operation: Imap.FlagOperation): Future[Unit] = {
       // TODO: We need to ignore keyword flags until we are ready to support some form of PERMANENTFLAGS
-      val flagSet = flags // flags.filterNot(_.isInstanceOf[Imap.Flag.NonStandard])
+      val flagSet = flags //flags.filterNot(_.isInstanceOf[Imap.Flag.NonStandard])
       operation match {
-        case Imap.FlagOperation.Replace => this.flags = flagSet
+        case Imap.FlagOperation.Replace =>
+          // Note, we do NOT replace Recent here
+          val hadRecent = this.flags.contains(Imap.Flag.Recent)
+          this.flags = flagSet
+          if (hadRecent) this.flags += Imap.Flag.Recent
         case Imap.FlagOperation.Add => this.flags ++= flagSet
         case Imap.FlagOperation.Remove => this.flags --= flagSet
       }

@@ -1,8 +1,9 @@
-package smail.imap
+package smail
+package imap
 
 import scala.util.Try
-import java.time.ZonedDateTime
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import smail.Util
 
 trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResult) {
@@ -130,7 +131,7 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
             case (None, _) => None
             case (Some(seq), flag) => flagFromToken(flag).map(seq :+ _)
           } match {
-            case Some(flags) => Try(dateTime.map(ZonedDateTime.parse(_, Imap.dateTimeFormat))) match {
+            case Some(flags) => Try(dateTime.map(OffsetDateTime.parse(_, Imap.DateTimeFormat))) match {
               case scala.util.Success(dateTime) => CommandSuccess(Append(tag, mailbox, message, flags, dateTime))
               case _ => UnexpectedArguments(allTokens)
             }
@@ -367,7 +368,13 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
     Some(resultCriteria)
   }
   
-  def searchCriteria(tokens: Seq[ImapToken]): Option[(Imap.SearchCriterion, Seq[ImapToken])] = {
+  def searchCriteria(currentTokens: Seq[ImapToken]): Option[(Imap.SearchCriterion, Seq[ImapToken])] = {
+    // We have to explode the top list out if it's there
+    val tokens = (currentTokens.headOption match {
+      case None => return None
+      case Some(ImapToken.List('(', tokens)) => tokens
+      case Some(token) => Seq(token)
+    }) ++ currentTokens.tail
     tokens.headOption.collect({ case ImapToken.Str(str, _) => str }).flatMap {
       case ci"ALL" => Some(Imap.SearchCriterion.All -> tokens.drop(1))
       case ci"ANSWERED" => Some(Imap.SearchCriterion.Answered -> tokens.drop(1))
@@ -375,7 +382,7 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
         case ImapToken.Str(string, _) => Imap.SearchCriterion.Bcc(string) -> tokens.drop(2)
       }
       case ci"BEFORE" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.Before(d) -> tokens.drop(2)
         }).toOption
       }).flatten
@@ -403,9 +410,9 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
       case ci"NOT" => searchCriteria(tokens.drop(1)).map {
         case (crit, updatedTokens) => Imap.SearchCriterion.Not(crit) -> updatedTokens
       }
-      case ci"OLD" => Some(Imap.SearchCriterion.New -> tokens.drop(1))
+      case ci"OLD" => Some(Imap.SearchCriterion.Old -> tokens.drop(1))
       case ci"ON" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.On(d) -> tokens.drop(2)
         }).toOption
       }).flatten
@@ -417,22 +424,22 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
       case ci"RECENT" => Some(Imap.SearchCriterion.Recent -> tokens.drop(1))
       case ci"SEEN" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
       case ci"SENTBEFORE" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.SentBefore(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case ci"SENTON" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.SentOn(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case ci"SENTSINCE" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.SentSince(d) -> tokens.drop(2)
         }).toOption
       }).flatten
       case ci"SINCE" => tokens.lift(1).collect({
-        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Imap.dateFormat)).map({ d =>
+        case ImapToken.Str(string, _) => Try(LocalDate.parse(string, Message.DateFormat)).map({ d =>
           Imap.SearchCriterion.Since(d) -> tokens.drop(2)
         }).toOption
       }).flatten
@@ -453,14 +460,15 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
         case ImapToken.Str(string, _) =>
           sequenceSetFromString(string).map(Imap.SearchCriterion.Uid(_) -> tokens.drop(2))
       }).flatten
-      case ci"UNANSWERED" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
-      case ci"UNDELETED" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
-      case ci"UNDRAFT" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
-      case ci"UNFLAGGED" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
+      case ci"UNANSWERED" => Some(Imap.SearchCriterion.Unanswered -> tokens.drop(1))
+      case ci"UNDELETED" => Some(Imap.SearchCriterion.Undeleted -> tokens.drop(1))
+      case ci"UNDRAFT" => Some(Imap.SearchCriterion.Undraft -> tokens.drop(1))
+      case ci"UNFLAGGED" => Some(Imap.SearchCriterion.Unflagged -> tokens.drop(1))
       case ci"UNKEYWORD" =>
         tokens.lift(1).flatMap(flagFromToken(_).map(Imap.SearchCriterion.Unkeyword(_) -> tokens.drop(2)))
-      case ci"UNSEEN" => Some(Imap.SearchCriterion.Seen -> tokens.drop(1))
-      case str => sequenceSetFromString(str).map(Imap.SearchCriterion.SequenceSet(_) -> tokens.drop(2))
+      case ci"UNSEEN" => Some(Imap.SearchCriterion.Unseen -> tokens.drop(1))
+      case str =>
+        sequenceSetFromString(str).map(Imap.SearchCriterion.SequenceSet(_) -> tokens.drop(1))
     }
   }
   
@@ -474,7 +482,9 @@ trait TokenSetToClientCommand extends (Seq[ImapToken] => ClientCommand.ParseResu
     case idx =>
       val lhs = string.take(idx)
       val rhs = string.drop(idx + 1)
-      sequenceNumberFromString(lhs).flatMap(lhs => sequenceNumberFromString(rhs).map(Imap.SequenceRange(lhs, _)))
+      sequenceNumberFromString(lhs).flatMap(lhs =>
+        sequenceNumberFromString(rhs).map(Imap.SequenceRange(lhs, _).normalize())
+      )
   }
   
   def sequenceSetItemFromString(string: String): Option[Imap.SequenceSetItem] = {

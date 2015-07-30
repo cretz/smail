@@ -1,4 +1,5 @@
-package smail.imap
+package smail
+package imap
 
 import scala.collection.JavaConversions._
 import org.specs2.mutable.SpecificationWithJUnit
@@ -28,6 +29,7 @@ import smail.imap.handler.InMemoryServer.InMemoryMailbox
 import javax.mail.Flags.Flag
 import javax.mail.search.FlagTerm
 import smail.imap.handler.HighLevelServer
+import java.time.OffsetDateTime
 
 class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   sequential
@@ -54,18 +56,20 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       secondMsg.getFrom.toSeq === Seq(new InternetAddress("foo@bar"))
       secondMsg.getMessageNumber === 2
       // No ms in imap
-      val headers = ctx.server.currentMailbox.get.messages(1).headers
-      secondMsg.getReceivedDate.getTime === headers(MailHeaders.Date).get.toEpochSecond * 1000
+      val msg = ctx.server.currentMailbox.get.messages(1)
+      val date = msg.headerList[Message.Field.OrigDate]
+      secondMsg.getReceivedDate.getTime === date.head.value.toEpochSecond * 1000
       // For now I reuse this
       secondMsg.getSentDate === secondMsg.getReceivedDate
       secondMsg.getSubject === "Test 2"
-      secondMsg.getAllHeaders.map(_.asInstanceOf[Header]).map(h => h.getName -> h.getValue).toSet ===
-        headers.headers.keys.flatMap(headers.lines(_)).map(_.split(": ", 2) match { case Array(k, v) => k -> v }).toSet
+      val actualHeaders = secondMsg.getAllHeaders.map(_.asInstanceOf[Header]).map(h => h.getName -> h.getValue).toSet
+      val expectedHeaders = msg.headers.map(f => f.prefix -> f.valueToString()).toSet
+      actualHeaders === expectedHeaders
       secondMsg.getContentType === "TEXT/PLAIN; charset=US-ASCII"
       Option(secondMsg.getDescription) === None
       Option(secondMsg.getDisposition) === None
       Option(secondMsg.getFileName) === None
-      secondMsg.getHeader(MailHeaders.MessageId.name).toSeq === Seq("<foo2@bar2>")
+      secondMsg.getHeader("Message-ID").toSeq === Seq("<foo2@bar2>")
       secondMsg.getLineCount === 1
       secondMsg.getSize === 14
     }
@@ -170,19 +174,20 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
       val folders = ctx.store.getDefaultFolder.list()
       folders.length === 2
       folders.exists(_.getName == "INBOX") === true
-      folders.exists(_.getFullName == "/INBOX") === true
+      println("REAL NAME: " + folders.map(_.getFullName).toSeq)
+      folders.exists(_.getFullName == "INBOX") === true
       folders.exists(_.getName == "NewTestFolder") === true
-      folders.exists(_.getFullName == "/NewTestFolder") === true
+      folders.exists(_.getFullName == "NewTestFolder") === true
       val childFolders = folders.find(_.getName == "NewTestFolder").get.list()
       childFolders.length === 1
       childFolders(0).getName === "NewTestMailbox"
-      childFolders(0).getFullName === "/NewTestFolder/NewTestMailbox"
+      childFolders(0).getFullName === "NewTestFolder/NewTestMailbox"
       // Now rename
       childFolders(0).renameTo(topFolder.getFolder("OldTestMailbox")) === true
       val updatedFolders = topFolder.list()
       updatedFolders.length === 1
       updatedFolders(0).getName === "OldTestMailbox"
-      updatedFolders(0).getFullName === "/NewTestFolder/OldTestMailbox"
+      updatedFolders(0).getFullName === "NewTestFolder/OldTestMailbox"
       // Now recursively delete from the top
       topFolder.delete(true)
       topFolder.exists() === false
@@ -291,17 +296,25 @@ class JavaMailSpec extends SpecificationWithJUnit with JavaMailMemoryServer {
   
   def addNewMessage(mailbox: InMemoryMailbox, uid: Int) = {
     import InMemoryServer._
-    import MailHeaders._
+    import Message.Address._
+    import Message.Field._
     mailbox.addMessage(new InMemoryMessage(
       mailbox = mailbox,
       uid = uid,
       flags = Set.empty,
-      headers = InMemory() +
-        (Subject -> ("Test " + uid)) +
-        (From -> Seq(Imap.MailboxAddress("foo" -> "bar"))) +
-        (Date -> ZonedDateTime.now()) +
-        (MessageId -> ("foo" + uid -> ("bar" + uid))) +
-        (To -> Seq(Imap.MailboxAddress("baz" -> "qux"))),
+//      headers = InMemory() +
+//        (Subject -> ("Test " + uid)) +
+//        (From -> Seq(Imap.MailboxAddress("foo" -> "bar"))) +
+//        (Date -> ZonedDateTime.now()) +
+//        (MessageId -> ("foo" + uid -> ("bar" + uid))) +
+//        (To -> Seq(Imap.MailboxAddress("baz" -> "qux"))),
+      headers = Seq(
+        Subject("Test " + uid),
+        From(Seq(Mailbox("foo" -> "bar"))),
+        OrigDate(OffsetDateTime.now()),
+        MessageId(Message.MsgId("foo" + uid, "bar" + uid)),
+        To(Seq(Mailbox("baz" -> "qux")))
+      ),
       body = "Test message " + uid
     ))
   }

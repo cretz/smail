@@ -16,3 +16,41 @@ it can be easily run like so:
     src/imaptest host=192.168.50.1 user=foo pass=bar test=src/tests/expunge
 
 See more information about running IMAP tests at http://imapwiki.org/ImapTest/Running.
+
+*Tests*
+
+- [ ] append - Things are shown as recent or not across connections immediately
+- [x] close
+- [x] copy
+- [ ] expunge - UID's reordered too quickly since deletes happen across connections immediately
+- [ ] expunge2 - UID's reordered too quickly since deletes happen across connections immediately
+- [x] fetch
+- [x] fetch-body
+- [x] fetch-envelope
+- [x] list
+- [ ] listext - Not handling now since it requires extra capability
+- [x] search-addresses
+- [x] search-body
+- [ ] search-context-update - Not handling since it requires extra capability
+- [ ] search-context-update2 - Not handling since it requires extra capability
+- [x] search-date
+- [x] search-flags
+- [x] search-header
+- [ ] search-sets - Need to be smarter about inclusion of last message and what not
+- [ ] search-size - ???
+- [ ] select - ???
+- [ ] sort-addresses - ???
+- [ ] sort-arrival - ???
+- [ ] sort-date - ???
+- [ ] sort-size - ???
+- [ ] sort-subject - ???
+- [ ] store - ???
+- [ ] subscribe - ???
+- [ ] thread - ???
+- [ ] thread2 - ???
+- [ ] thread3 - ???
+- [ ] thread4 - ???
+- [ ] thread5 - ???
+- [ ] thread6 - ???
+- [ ] thread7 - ???
+- [ ] thread8 - ???

@@ -1,7 +1,7 @@
 package smail.imap
 package handler
 
-import java.time.ZonedDateTime
+import java.time.OffsetDateTime
 import scala.concurrent.Future
 
 trait HighLevelServer {
@@ -68,19 +68,19 @@ object HighLevelServer {
     def uidValidity: BigInt
     def nextUid: BigInt
     
-    def addMessage(message: String, flags: Set[Imap.Flag], date: ZonedDateTime): Future[Option[String]]
-    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, Message)]]
+    def addMessage(message: String, flags: Set[Imap.Flag], date: OffsetDateTime): Future[Option[String]]
+    def getMessages(start: BigInt, end: Option[BigInt], byUid: Boolean): Future[Seq[(BigInt, MailboxMessage)]]
     def checkpoint(): Future[Unit]
     def expunge(): Future[Seq[BigInt]]
     def search(criteria: Seq[Imap.SearchCriterion], returnUids: Boolean): Future[Seq[BigInt]]
   }
   
-  trait Message {
+  trait MailboxMessage {
     def uid: BigInt
     def bodyStructure: Imap.BodyStructure
     def envelope: Imap.Envelope
     def flags: Set[Imap.Flag]
-    def internalDate: ZonedDateTime
+    def internalDate: OffsetDateTime
     def size: BigInt
 
     def markSeen(): Future[Unit]
